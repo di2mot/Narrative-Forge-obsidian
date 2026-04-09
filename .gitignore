@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Narrative OS runtime data (per-book, never committed)
+.nos.chromadb/
+.nos.hashes.json
+
+# Obsidian plugin
+obsidian-plugin/node_modules/
+
+# Environment
+.env
+*.env
+
+# macOS
+.DS_Store
+
+# Claude
+.claude

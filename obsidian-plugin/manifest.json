@@ -1,0 +1,10 @@
+{
+  "id": "narrative-forge",
+  "name": "Narrative Forge",
+  "version": "0.4.0",
+  "minAppVersion": "1.0.0",
+  "description": "AI-powered consistency engine for fiction writers. Connects to narrative-forge backend.",
+  "author": "di2mot",
+  "authorUrl": "https://github.com/di2mot",
+  "isDesktopOnly": true
+}
