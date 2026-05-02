@@ -780,28 +780,13 @@ function registerContextMenu(plugin, getCharacters, activateChat) {
         if (activateChat) {
           menu.addItem(
             (item) => item.setTitle("Send to chat").setIcon("message-circle").setSection("narrative").onClick(async () => {
-              var _a;
               const selection = editor.getSelection();
               if (!selection.trim())
                 return;
-              const activeFile = plugin.app.workspace.getActiveFile();
-              const fileName = (_a = activeFile == null ? void 0 : activeFile.name) != null ? _a : "current file";
-              let fileContent = "";
-              if (activeFile) {
-                try {
-                  fileContent = await plugin.app.vault.read(activeFile);
-                } catch (e) {
-                }
-              }
-              const message = `[Selected text: "${selection}"]
-
-Context from ${fileName}:
-${fileContent.slice(0, 8e3)}
-
-Please analyze this passage.`;
               const chatView = await activateChat();
               if (chatView) {
-                chatView.injectMessage(message);
+                chatView.capturedSelection = selection;
+                chatView.injectMessage("Please analyze this selected passage.");
               } else {
                 new import_obsidian2.Notice("Could not open chat panel.");
               }
@@ -1196,6 +1181,7 @@ var _NarrativeChatView = class extends import_obsidian4.ItemView {
     super(leaf);
     this.messages = [];
     this.isStreaming = false;
+    this.capturedSelection = null;
     this.api = api;
     this.plugin = plugin;
     this.mdComponent = new import_obsidian4.Component();
@@ -1262,15 +1248,17 @@ var _NarrativeChatView = class extends import_obsidian4.ItemView {
     );
   }
   getContext() {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e, _f, _g;
     const vaultPath = this.plugin.app.vault.adapter instanceof import_obsidian4.FileSystemAdapter ? this.plugin.app.vault.adapter.getBasePath() : "";
     const view = this.plugin.app.workspace.getActiveViewOfType(import_obsidian4.MarkdownView);
     const relativePath = (_c = (_b = (_a = view == null ? void 0 : view.file) == null ? void 0 : _a.path) != null ? _b : this.plugin.lastActiveMdPath) != null ? _c : "";
     const filePath = vaultPath && relativePath ? `${vaultPath}/${relativePath}` : relativePath;
+    const selection = (_e = (_d = this.capturedSelection) != null ? _d : view == null ? void 0 : view.editor.getSelection()) != null ? _e : "";
+    this.capturedSelection = null;
     return {
-      fileContent: (_d = view == null ? void 0 : view.editor.getValue()) != null ? _d : "",
-      selection: (_e = view == null ? void 0 : view.editor.getSelection()) != null ? _e : "",
-      fileName: (_f = relativePath.split("/").pop()) != null ? _f : "",
+      fileContent: (_f = view == null ? void 0 : view.editor.getValue()) != null ? _f : "",
+      selection,
+      fileName: (_g = relativePath.split("/").pop()) != null ? _g : "",
       filePath
     };
   }
@@ -1300,7 +1288,7 @@ var _NarrativeChatView = class extends import_obsidian4.ItemView {
       const provider = this.plugin.settings.provider === "api" ? "api" : void 0;
       const apiKey = this.plugin.settings.provider === "api" ? this.plugin.settings.apiKey || void 0 : void 0;
       const { messages: apiMessages, bookDir } = await this.buildApiMessages();
-      const language = this.plugin.getCurrentBookLanguage();
+      const language = this.plugin.getEmbeddingLanguage();
       console.log("[NOS chat] sending to", this.api.baseUrl, "bookDir=", bookDir, "lang=", language);
       for await (const event of this.api.chatStream(
         apiMessages,
@@ -1473,7 +1461,8 @@ var DEFAULT_SETTINGS = {
   bookDir: "",
   provider: "cli",
   apiKey: "",
-  autoImport: true
+  autoImport: true,
+  embeddingModel: "multilingual"
 };
 var NarrativeSettingTab = class extends import_obsidian5.PluginSettingTab {
   constructor(app, plugin) {
@@ -1508,7 +1497,7 @@ var NarrativeSettingTab = class extends import_obsidian5.PluginSettingTab {
         })
       );
       new import_obsidian5.Setting(containerEl).setName("Book directory").setDesc(
-        "Path to the directory containing .nos files. Leave empty to use vault root."
+        "Path to the directory containing .md chapter files. Leave empty to use vault root."
       ).addText(
         (text) => text.setPlaceholder("/path/to/book (empty = vault root)").setValue(this.plugin.settings.bookDir).onChange(async (value) => {
           this.plugin.settings.bookDir = value.trim();
@@ -1566,10 +1555,18 @@ var NarrativeSettingTab = class extends import_obsidian5.PluginSettingTab {
     }
     containerEl.createEl("h3", { text: "Import" });
     new import_obsidian5.Setting(containerEl).setName("Auto-import on save").setDesc(
-      "Automatically trigger book import when a .nos or .md file is saved."
+      "Automatically trigger book import when a .md file is saved."
     ).addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.autoImport).onChange(async (value) => {
         this.plugin.settings.autoImport = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian5.Setting(containerEl).setName("Embedding model").setDesc(
+      "Model used to index and search your book. Use Multilingual for non-English text. Changing this requires a Force reimport to rebuild the index."
+    ).addDropdown(
+      (drop) => drop.addOption("en", "English (all-MiniLM-L6-v2, faster)").addOption("multilingual", "Multilingual (paraphrase-multilingual-MiniLM-L12-v2)").setValue(this.plugin.settings.embeddingModel).onChange(async (value) => {
+        this.plugin.settings.embeddingModel = value;
         await this.plugin.saveSettings();
       })
     );
@@ -2234,7 +2231,6 @@ var NarrativePlugin = class extends import_obsidian9.Plugin {
     this.cachedCharacters = [];
     this.autoImportDebounceMap = /* @__PURE__ */ new Map();
     this.currentBookRoot = null;
-    this.currentBookLanguage = "uk";
     this.lastActiveMdPath = null;
   }
   // last focused .md file path (vault-relative)
@@ -2242,7 +2238,10 @@ var NarrativePlugin = class extends import_obsidian9.Plugin {
     return this.currentBookRoot;
   }
   getCurrentBookLanguage() {
-    return this.currentBookLanguage;
+    return this.getEmbeddingLanguage();
+  }
+  getEmbeddingLanguage() {
+    return this.settings.embeddingModel === "en" ? "en" : "uk";
   }
   async onload() {
     console.log("[Narrative Forge] Loading plugin...");
@@ -2331,9 +2330,7 @@ var NarrativePlugin = class extends import_obsidian9.Plugin {
         }
       })
     );
-    if (this.settings.autoImport) {
-      this.registerAutoImport();
-    }
+    this.registerAutoImport();
     this.addSettingTab(new NarrativeSettingTab(this.app, this));
     void this.reloadCharacterCache();
     this.app.workspace.onLayoutReady(() => {
@@ -2355,7 +2352,6 @@ var NarrativePlugin = class extends import_obsidian9.Plugin {
   // Active file → book detection
   // ---------------------------------------------------------------------------
   async onActiveFileChange(file) {
-    var _a;
     if (file.extension !== "md")
       return;
     this.lastActiveMdPath = file.path;
@@ -2363,7 +2359,6 @@ var NarrativePlugin = class extends import_obsidian9.Plugin {
     const sidebar = this.getSidebarView();
     if (result) {
       this.currentBookRoot = result.bookRoot;
-      this.currentBookLanguage = (_a = result.config["language"]) != null ? _a : "uk";
       this.api.setBaseUrl(result.config.backendUrl);
       void this.reloadCharacterCache();
       if (sidebar)
@@ -2643,11 +2638,11 @@ Change in \`.narrative-book.json\` if running on a different port.
   registerAutoImport() {
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
+        if (!this.settings.autoImport)
+          return;
         if (!(file instanceof import_obsidian9.TFile))
           return;
-        if (!file.path.endsWith(".md") && !file.path.endsWith(".nos"))
-          return;
-        if (file.path.includes("/characters/") || file.path.includes("/locations/") || file.path.includes("/world/"))
+        if (!file.path.endsWith(".md"))
           return;
         const existing = this.autoImportDebounceMap.get(file.path);
         if (existing)
@@ -2655,21 +2650,16 @@ Change in \`.narrative-book.json\` if running on a different port.
         const timer = setTimeout(async () => {
           this.autoImportDebounceMap.delete(file.path);
           try {
-            if (file.path.endsWith(".md")) {
-              const bookResult = await this.bookManager.findBook(file.path);
-              if (bookResult) {
-                const { config, bookRoot } = bookResult;
-                const chapterFolder = bookRoot ? `${bookRoot}/${config.folders.chapters}` : config.folders.chapters;
-                if (file.path.startsWith(chapterFolder)) {
-                  await this.bookManager.syncChapterMetadata(file, bookRoot, config);
-                }
+            const bookResult = await this.bookManager.findBook(file.path);
+            if (bookResult) {
+              const { config, bookRoot } = bookResult;
+              const chapterFolder = bookRoot ? `${bookRoot}/${config.folders.chapters}` : config.folders.chapters;
+              if (file.path.startsWith(chapterFolder)) {
+                await this.bookManager.syncChapterMetadata(file, bookRoot, config);
               }
-              await this.api.importBook(false, this.getAbsoluteBookDir(), this.currentBookLanguage).catch(() => {
-              });
-            } else if (file.path.endsWith(".nos")) {
-              await this.api.importBook(false, this.getAbsoluteBookDir(), this.currentBookLanguage).catch(() => {
-              });
             }
+            await this.api.importBook(false, this.getAbsoluteBookDir(), this.getEmbeddingLanguage()).catch(() => {
+            });
           } catch (e) {
           }
         }, 2e3);
@@ -2682,7 +2672,7 @@ Change in \`.narrative-book.json\` if running on a different port.
    * for each one (hash-based, so unchanged files are skipped quickly).
    */
   async startupReindex() {
-    var _a, _b;
+    var _a;
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof import_obsidian9.FileSystemAdapter))
       return;
@@ -2713,18 +2703,12 @@ Change in \`.narrative-book.json\` if running on a different port.
       }
       if (this.currentBookRoot == null) {
         this.currentBookRoot = bookRoot;
-        try {
-          const markerRaw = await adapter.read(markerPath).catch(() => "{}");
-          this.currentBookLanguage = (_b = JSON.parse(markerRaw)["language"]) != null ? _b : "uk";
-        } catch (e) {
-          this.currentBookLanguage = "uk";
-        }
         this.api.setBaseUrl(backendUrl);
         console.log(`[Narrative Forge] Active book: ${absBookDir}`);
       }
       try {
         const api = new NarrativeAPI(backendUrl);
-        await api.importBook(false, absBookDir, this.currentBookLanguage);
+        await api.importBook(false, absBookDir, this.getEmbeddingLanguage());
         console.log(`[Narrative Forge] Startup reindex done: ${bookRoot || "vault root"}`);
       } catch (e) {
       }
@@ -2733,7 +2717,7 @@ Change in \`.narrative-book.json\` if running on a different port.
   async runImport(force = false) {
     const notice = new import_obsidian9.Notice("Narrative Forge: Importing...", 0);
     try {
-      const result = await this.api.importBook(force, this.getAbsoluteBookDir(), this.currentBookLanguage);
+      const result = await this.api.importBook(force, this.getAbsoluteBookDir(), this.getEmbeddingLanguage());
       notice.hide();
       new import_obsidian9.Notice(
         `Narrative Forge: Imported ${result.chapters_imported} chapter(s), ${result.characters_found} character(s).` + (result.errors.length > 0 ? ` ${result.errors.length} error(s).` : "")

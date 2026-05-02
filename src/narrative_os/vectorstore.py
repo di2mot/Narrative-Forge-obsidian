@@ -10,7 +10,7 @@ def get_client(book_dir: Path) -> chromadb.Client:
     """Get persistent ChromaDB client for this book."""
     if not book_dir.exists():
         raise FileNotFoundError(f"Book directory does not exist: {book_dir}")
-    db_path = book_dir / ".nos.chromadb"
+    db_path = book_dir / ".narrative.chromadb"
     db_path.mkdir(exist_ok=True)
     return chromadb.PersistentClient(
         path=str(db_path),
@@ -40,6 +40,24 @@ def upsert_chunks(
         documents=documents,
         metadatas=metadatas,
     )
+
+
+def set_collection_language(collection: chromadb.Collection, language: str) -> None:
+    """Store the embedding language in collection metadata for consistent search."""
+    try:
+        current = collection.metadata or {}
+        if current.get("language") != language:
+            collection.modify(metadata={**current, "language": language})
+    except Exception:
+        pass
+
+
+def get_collection_language(collection: chromadb.Collection) -> str:
+    """Read embedding language from collection metadata."""
+    try:
+        return (collection.metadata or {}).get("language", "en")
+    except Exception:
+        return "en"
 
 
 def delete_chapter(collection: chromadb.Collection, chapter_number: int) -> None:

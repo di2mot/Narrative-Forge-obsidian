@@ -52,7 +52,7 @@ async def chat(request: Request):
     model = body.get("model")
     provider = body.get("provider")
     book_dir = body.get("book_dir") or str(BOOK_DIR)
-    language = body.get("language") or os.environ.get("NOS_LANGUAGE", "uk")
+    language = body.get("language") or os.environ.get("NOS_LANGUAGE", "en")
 
     if not messages:
         raise HTTPException(400, "messages required")

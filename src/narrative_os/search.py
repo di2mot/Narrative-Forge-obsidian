@@ -1,11 +1,10 @@
 """Semantic search over ChromaDB."""
 
 from __future__ import annotations
-import os
 from pathlib import Path
 
 from .embeddings import embed_one
-from .vectorstore import get_client, get_collection, search, get_by_filter
+from .vectorstore import get_client, get_collection, search, get_by_filter, get_collection_language
 
 
 def _get_collection(book_dir: Path):
@@ -14,9 +13,9 @@ def _get_collection(book_dir: Path):
 
 def search_semantic(book_dir: Path, query: str, n: int = 5) -> list[dict]:
     """Full semantic search -- embed query and find similar scenes."""
-    lang = os.environ.get("NOS_LANGUAGE", "en")
-    q_vec = embed_one(query, language=lang)
     col = _get_collection(book_dir)
+    lang = get_collection_language(col)
+    q_vec = embed_one(query, language=lang)
     return search(col, q_vec, n=n)
 
 

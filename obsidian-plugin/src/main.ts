@@ -98,7 +98,6 @@ export default class NarrativePlugin extends Plugin {
   private autoImportDebounceMap = new Map<string, ReturnType<typeof setTimeout>>();
   private writingSession!: WritingSession;
   private currentBookRoot: string | null = null;
-  private currentBookLanguage = "uk";
   lastActiveMdPath: string | null = null;  // last focused .md file path (vault-relative)
 
   getCurrentBookRoot(): string | null {
@@ -106,7 +105,11 @@ export default class NarrativePlugin extends Plugin {
   }
 
   getCurrentBookLanguage(): string {
-    return this.currentBookLanguage;
+    return this.getEmbeddingLanguage();
+  }
+
+  getEmbeddingLanguage(): string {
+    return this.settings.embeddingModel === "en" ? "en" : "uk";
   }
 
   async onload(): Promise<void> {
@@ -258,9 +261,7 @@ export default class NarrativePlugin extends Plugin {
     // Auto-import / auto-sync on file save
     // ---------------------------------------------------------------------------
 
-    if (this.settings.autoImport) {
-      this.registerAutoImport();
-    }
+    this.registerAutoImport();
 
     // ---------------------------------------------------------------------------
     // Settings tab
@@ -315,7 +316,6 @@ export default class NarrativePlugin extends Plugin {
 
     if (result) {
       this.currentBookRoot = result.bookRoot;
-      this.currentBookLanguage = (result.config as unknown as Record<string, string>)["language"] ?? "uk";
       this.api.setBaseUrl(result.config.backendUrl);
       void this.reloadCharacterCache();
       if (sidebar) void sidebar.refresh();
@@ -619,10 +619,9 @@ Change in \`.narrative-book.json\` if running on a different port.
   private registerAutoImport(): void {
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
+        if (!this.settings.autoImport) return;
         if (!(file instanceof TFile)) return;
-        if (!file.path.endsWith(".md") && !file.path.endsWith(".nos")) return;
-        // Skip character/location/world notes — they don't need re-indexing
-        if (file.path.includes("/characters/") || file.path.includes("/locations/") || file.path.includes("/world/")) return;
+        if (!file.path.endsWith(".md")) return;
 
         // Debounce: wait 2s after last modification before importing
         const existing = this.autoImportDebounceMap.get(file.path);
@@ -631,28 +630,21 @@ Change in \`.narrative-book.json\` if running on a different port.
         const timer = setTimeout(async () => {
           this.autoImportDebounceMap.delete(file.path);
           try {
-            if (file.path.endsWith(".md")) {
-              // Sync chapter metadata (character/location notes)
-              const bookResult = await this.bookManager.findBook(file.path);
-              if (bookResult) {
-                const { config, bookRoot } = bookResult;
-                // Only sync files inside the chapters folder
-                const chapterFolder = bookRoot
-                  ? `${bookRoot}/${config.folders.chapters}`
-                  : config.folders.chapters;
-                if (file.path.startsWith(chapterFolder)) {
-                  await this.bookManager.syncChapterMetadata(file, bookRoot, config);
-                }
+            // Sync chapter metadata for files inside the chapters folder
+            const bookResult = await this.bookManager.findBook(file.path);
+            if (bookResult) {
+              const { config, bookRoot } = bookResult;
+              const chapterFolder = bookRoot
+                ? `${bookRoot}/${config.folders.chapters}`
+                : config.folders.chapters;
+              if (file.path.startsWith(chapterFolder)) {
+                await this.bookManager.syncChapterMetadata(file, bookRoot, config);
               }
-              // Also trigger full import
-              await this.api.importBook(false, this.getAbsoluteBookDir(), this.currentBookLanguage).catch(() => {
-                // Silent fail — backend may not be running
-              });
-            } else if (file.path.endsWith(".nos")) {
-              await this.api.importBook(false, this.getAbsoluteBookDir(), this.currentBookLanguage).catch(() => {
-                // Silent fail — backend may not be running
-              });
             }
+            // Trigger full incremental import (indexes chapters, characters, locations, world)
+            await this.api.importBook(false, this.getAbsoluteBookDir(), this.getEmbeddingLanguage()).catch(() => {
+              // Silent fail — backend may not be running
+            });
           } catch {
             // Silent fail — user may not have backend running
           }
@@ -706,19 +698,13 @@ Change in \`.narrative-book.json\` if running on a different port.
       // Set currentBookRoot to the first book found
       if (this.currentBookRoot == null) {
         this.currentBookRoot = bookRoot;
-        try {
-          const markerRaw = await adapter.read(markerPath).catch(() => "{}");
-          this.currentBookLanguage = (JSON.parse(markerRaw) as Record<string, string>)["language"] ?? "uk";
-        } catch {
-          this.currentBookLanguage = "uk";
-        }
         this.api.setBaseUrl(backendUrl);
         console.log(`[Narrative Forge] Active book: ${absBookDir}`);
       }
 
       try {
         const api = new NarrativeAPI(backendUrl);
-        await api.importBook(false, absBookDir, this.currentBookLanguage);
+        await api.importBook(false, absBookDir, this.getEmbeddingLanguage());
         console.log(`[Narrative Forge] Startup reindex done: ${bookRoot || "vault root"}`);
       } catch {
         // Silent — backend may not be running yet
@@ -729,7 +715,7 @@ Change in \`.narrative-book.json\` if running on a different port.
   async runImport(force = false): Promise<void> {
     const notice = new Notice("Narrative Forge: Importing...", 0);
     try {
-      const result = await this.api.importBook(force, this.getAbsoluteBookDir(), this.currentBookLanguage);
+      const result = await this.api.importBook(force, this.getAbsoluteBookDir(), this.getEmbeddingLanguage());
       notice.hide();
       new Notice(
         `Narrative Forge: Imported ${result.chapters_imported} chapter(s), ` +

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 import os
+import re
 from pathlib import Path
+
+_DIALOGUE_RE = re.compile(r'^\[character:\s*[^\]]+\]\s*[—–-]')
+_COLON_RE = re.compile(r'^([А-ЯІЇЄA-Z][^:]{1,30}):\s+(.+)$')
 
 
 BOOK_DIR = Path(os.environ.get("NOS_BOOK_DIR", "."))
@@ -153,15 +157,15 @@ def _resolve_file(BD: Path, filename: str) -> Path | None:
     - bare name: "01-arrival.md" → searches chapters/, notes/, BD/
     - relative path: "notes/general.md" → resolves directly from BD
     """
-    # If filename contains a slash, treat as relative to BD
+    bd_resolved = BD.resolve()
     if "/" in filename:
-        p = BD / filename
-        return p if p.exists() else None
+        p = (BD / filename).resolve()
+        return p if p.is_relative_to(bd_resolved) and p.exists() else None
 
-    # Bare filename — try common subdirs in order
     for subdir in ("chapters", "notes", ""):
         p = BD / subdir / filename if subdir else BD / filename
-        if p.exists():
+        p = p.resolve()
+        if p.is_relative_to(bd_resolved) and p.exists():
             return p
     return None
 
@@ -306,22 +310,16 @@ def _dispatch(name: str, inputs: dict, book_dir: Path | None = None) -> str:
         location = inputs.get("location", "").strip()
         timeline = inputs.get("timeline", "").strip()
 
-        # Format dialogue lines: "Name: text" → "[character: Name] — text"
-        # Already formatted lines ("[character: ...] —") are left as-is
-        import re
         formatted_lines = []
-        dialogue_pattern = re.compile(r'^\[character:\s*[^\]]+\]\s*[—–-]')
-        colon_pattern = re.compile(r'^([А-ЯІЇЄA-Z][^:]{1,30}):\s+(.+)$')
         for line in raw_text.splitlines():
             stripped = line.strip()
             if not stripped:
                 formatted_lines.append("")
                 continue
-            if dialogue_pattern.match(stripped):
-                # Already correctly formatted
+            if _DIALOGUE_RE.match(stripped):
                 formatted_lines.append(stripped)
             else:
-                m = colon_pattern.match(stripped)
+                m = _COLON_RE.match(stripped)
                 if m:
                     char_name = m.group(1).strip()
                     dialogue_text = m.group(2).strip()

@@ -11,7 +11,7 @@ from chromadb import Collection
 
 from .parser import parse_book, Chapter, Scene
 from .embeddings import embed
-from .vectorstore import get_client, get_collection, upsert_chunks, delete_chapter
+from .vectorstore import get_client, get_collection, upsert_chunks, delete_chapter, set_collection_language
 
 
 def _chunk_id(chapter: int, scene_idx: int, chunk_idx: int = 0) -> str:
@@ -25,10 +25,13 @@ def _note_chunk_id(filename: str) -> str:
 
 _CHUNK_WORDS = 150   # target window size in words
 _CHUNK_OVERLAP = 30  # overlap between consecutive chunks
+_NOTE_DIRS = ("notes", "characters", "locations", "world")
 
 
 def _split_words(text: str, window: int, overlap: int) -> list[str]:
     """Split text into overlapping word windows."""
+    if overlap >= window:
+        raise ValueError(f"overlap ({overlap}) must be less than window ({window})")
     words = text.split()
     if len(words) <= window:
         return [text]
@@ -81,7 +84,7 @@ class BookImporter:
     def __init__(self, book_dir: Path, language: str = "en"):
         self.book_dir = book_dir
         self.language = language
-        self.hashes_path = book_dir / ".nos.hashes.json"
+        self.hashes_path = book_dir / ".narrative.hashes.json"
         self._hashes: dict[str, str] = self._load_hashes()
 
     def _load_hashes(self) -> dict[str, str]:
@@ -101,9 +104,10 @@ class BookImporter:
     def import_book(self, force: bool = False) -> dict:
         client = get_client(self.book_dir)
         collection = get_collection(client)
+        lang = os.environ.get("NOS_LANGUAGE", self.language)
+        set_collection_language(collection, lang)
 
         chapters = parse_book(self.book_dir)
-        lang = os.environ.get("NOS_LANGUAGE", self.language)
 
         imported = 0
         skipped = 0
@@ -163,89 +167,93 @@ class BookImporter:
     def _import_notes(
         self, collection: Collection, lang: str, force: bool
     ) -> tuple[int, int, list[str]]:
-        """Index all .md files in the notes/ folder."""
-        notes_dir = self.book_dir / "notes"
-        if not notes_dir.exists():
-            return 0, 0, []
-
+        """Index all .md files in notes/, characters/, locations/, world/ (recursive)."""
         imported = 0
         skipped = 0
         errors: list[str] = []
 
-        for path in sorted(notes_dir.glob("*.md")):
-            if path.name.startswith("_"):
+        for dir_name in _NOTE_DIRS:
+            notes_dir = self.book_dir / dir_name
+            if not notes_dir.exists():
                 continue
 
-            rel = f"notes/{path.name}"
-            file_hash = self._file_hash(path)
-            if not force and self._hashes.get(rel) == file_hash:
-                skipped += 1
-                continue
+            for path in sorted(notes_dir.rglob("*.md")):
+                if path.name.startswith("_"):
+                    continue
 
-            try:
-                text = path.read_text(encoding="utf-8").strip()
-                # Strip YAML frontmatter
-                if text.startswith("---"):
-                    end = text.find("---", 3)
-                    if end != -1:
-                        text = text[end + 3:].strip()
-
-                if not text:
+                rel = str(path.relative_to(self.book_dir))
+                file_hash = self._file_hash(path)
+                if not force and self._hashes.get(rel) == file_hash:
                     skipped += 1
                     continue
 
-                base_note_id = _note_chunk_id(path.name)
-                title = path.stem.replace("-", " ").replace("_", " ")
-
-                # Delete old chunks (may be more than one if note grew)
                 try:
-                    existing = collection.get(where={"filename": path.name})
-                    if existing["ids"]:
-                        collection.delete(ids=existing["ids"])
-                except Exception:
+                    text = path.read_text(encoding="utf-8").strip()
+                    # Strip YAML frontmatter
+                    if text.startswith("---"):
+                        end = text.find("---", 3)
+                        if end != -1:
+                            text = text[end + 3:].strip()
+
+                    if not text:
+                        skipped += 1
+                        continue
+
+                    base_note_id = _note_chunk_id(rel)
+                    title = path.stem.replace("-", " ").replace("_", " ")
+
+                    # Delete old chunks — by rel_path first, fallback to filename for migration
                     try:
-                        collection.delete(ids=[base_note_id])
+                        existing = collection.get(where={"rel_path": rel})
+                        if existing["ids"]:
+                            collection.delete(ids=existing["ids"])
+                        else:
+                            existing = collection.get(where={"filename": path.name})
+                            if existing["ids"]:
+                                collection.delete(ids=existing["ids"])
                     except Exception:
-                        pass
+                        try:
+                            collection.delete(ids=[base_note_id])
+                        except Exception:
+                            pass
 
-                windows = _split_words(text, _CHUNK_WORDS, _CHUNK_OVERLAP)
-                chunk_ids = [
-                    f"{base_note_id}__ck{i:04d}" if len(windows) > 1 else base_note_id
-                    for i in range(len(windows))
-                ]
-                metadatas = [
-                    {
-                        "type": "note",
-                        "filename": path.name,
-                        "title": title,
-                        "chunk_index": i,
-                        "chunk_total": len(windows),
-                    }
-                    for i in range(len(windows))
-                ]
+                    windows = _split_words(text, _CHUNK_WORDS, _CHUNK_OVERLAP)
+                    chunk_ids = [
+                        f"{base_note_id}__ck{i:04d}" if len(windows) > 1 else base_note_id
+                        for i in range(len(windows))
+                    ]
+                    metadatas = [
+                        {
+                            "type": "note",
+                            "note_type": dir_name,
+                            "filename": path.name,
+                            "rel_path": rel,
+                            "title": title,
+                            "chunk_index": i,
+                            "chunk_total": len(windows),
+                        }
+                        for i in range(len(windows))
+                    ]
 
-                embeddings = embed(windows, language=lang)
-                upsert_chunks(
-                    collection,
-                    chunk_ids=chunk_ids,
-                    embeddings=embeddings,
-                    documents=windows,
-                    metadatas=metadatas,
-                )
+                    embeddings = embed(windows, language=lang)
+                    upsert_chunks(
+                        collection,
+                        chunk_ids=chunk_ids,
+                        embeddings=embeddings,
+                        documents=windows,
+                        metadatas=metadatas,
+                    )
 
-                self._hashes[rel] = file_hash
-                imported += 1
+                    self._hashes[rel] = file_hash
+                    imported += 1
 
-            except Exception as e:
-                errors.append(f"notes/{path.name}: {e}")
+                except Exception as e:
+                    errors.append(f"{rel}: {e}")
 
         return imported, skipped, errors
 
     def _import_file(self, path: Path) -> None:
         """Re-index a single file after edit."""
-        from .parser import parse_chapter
-        from .vectorstore import get_client, get_collection, delete_chapter
-
         ch = parse_chapter(path)
         if not ch or not ch.scenes:
             return

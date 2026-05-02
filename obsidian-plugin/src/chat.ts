@@ -23,6 +23,7 @@ export class NarrativeChatView extends ItemView {
   private sendBtn!: HTMLButtonElement;
   private isStreaming = false;
   private mdComponent: Component;
+  capturedSelection: string | null = null;
 
   constructor(leaf: WorkspaceLeaf, api: NarrativeAPI, plugin: NarrativePlugin) {
     super(leaf);
@@ -129,9 +130,11 @@ export class NarrativeChatView extends ItemView {
     const relativePath = view?.file?.path ?? this.plugin.lastActiveMdPath ?? "";
     const filePath = vaultPath && relativePath ? `${vaultPath}/${relativePath}` : relativePath;
 
+    const selection = this.capturedSelection ?? view?.editor.getSelection() ?? "";
+    this.capturedSelection = null;
     return {
       fileContent: view?.editor.getValue() ?? "",
-      selection: view?.editor.getSelection() ?? "",
+      selection,
       fileName: relativePath.split("/").pop() ?? "",
       filePath,
     };
@@ -172,7 +175,7 @@ export class NarrativeChatView extends ItemView {
 
       // Build API messages: enrich the last user message with active file context
       const { messages: apiMessages, bookDir } = await this.buildApiMessages();
-      const language = this.plugin.getCurrentBookLanguage();
+      const language = this.plugin.getEmbeddingLanguage();
       console.log("[NOS chat] sending to", this.api.baseUrl, "bookDir=", bookDir, "lang=", language);
 
       for await (const event of this.api.chatStream(

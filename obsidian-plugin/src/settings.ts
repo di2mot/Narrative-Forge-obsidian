@@ -15,6 +15,7 @@ export interface NarrativeSettings {
   provider: string; // 'cli' | 'api'
   apiKey: string;
   autoImport: boolean;
+  embeddingModel: "en" | "multilingual";
 }
 
 export const DEFAULT_SETTINGS: NarrativeSettings = {
@@ -26,6 +27,7 @@ export const DEFAULT_SETTINGS: NarrativeSettings = {
   provider: "cli",
   apiKey: "",
   autoImport: true,
+  embeddingModel: "multilingual",
 };
 
 export class NarrativeSettingTab extends PluginSettingTab {
@@ -94,7 +96,7 @@ export class NarrativeSettingTab extends PluginSettingTab {
       new Setting(containerEl)
         .setName("Book directory")
         .setDesc(
-          "Path to the directory containing .nos files. Leave empty to use vault root."
+          "Path to the directory containing .md chapter files. Leave empty to use vault root."
         )
         .addText((text) =>
           text
@@ -199,13 +201,30 @@ export class NarrativeSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Auto-import on save")
       .setDesc(
-        "Automatically trigger book import when a .nos or .md file is saved."
+        "Automatically trigger book import when a .md file is saved."
       )
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.autoImport)
           .onChange(async (value) => {
             this.plugin.settings.autoImport = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Embedding model")
+      .setDesc(
+        "Model used to index and search your book. Use Multilingual for non-English text. " +
+        "Changing this requires a Force reimport to rebuild the index."
+      )
+      .addDropdown((drop) =>
+        drop
+          .addOption("en", "English (all-MiniLM-L6-v2, faster)")
+          .addOption("multilingual", "Multilingual (paraphrase-multilingual-MiniLM-L12-v2)")
+          .setValue(this.plugin.settings.embeddingModel)
+          .onChange(async (value: string) => {
+            this.plugin.settings.embeddingModel = value as "en" | "multilingual";
             await this.plugin.saveSettings();
           })
       );

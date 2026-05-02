@@ -145,7 +145,7 @@ async def run_agent_turn(
     """Run one agent turn. Dispatches to the configured provider."""
     prov = provider or get_provider()
     bd = book_dir or os.environ.get("NOS_BOOK_DIR", ".")
-    lang = language or os.environ.get("NOS_LANGUAGE", "uk")
+    lang = language or os.environ.get("NOS_LANGUAGE", "en")
 
     if prov == "api":
         async for event in _run_api_turn(messages, db, api_key=api_key, model=model, book_dir=bd):
@@ -307,20 +307,23 @@ async def _run_cli_turn(
                 "args": ["-m", "narrative_os"],
                 "env": {
                     "NOS_BOOK_DIR": bd,
-                    "NOS_LANGUAGE": language or os.environ.get("NOS_LANGUAGE", "uk"),
+                    "NOS_LANGUAGE": language or os.environ.get("NOS_LANGUAGE", "en"),
                 },
             }
         }
     }
 
-    mcp_config_file = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".json", delete=False
-    )
+    mcp_config_path = None
     try:
-        json.dump(mcp_config, mcp_config_file)
-        mcp_config_file.close()
-        mcp_config_path = mcp_config_file.name
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            mcp_config_path = f.name
+            json.dump(mcp_config, f)
     except OSError as e:
+        if mcp_config_path:
+            try:
+                os.unlink(mcp_config_path)
+            except OSError:
+                pass
         yield AgentEvent(type="error", data={"message": f"Failed to write MCP config: {e}"})
         return
 
@@ -358,6 +361,9 @@ async def _run_cli_turn(
         yield AgentEvent(type="error", data={"message": f"Failed to start claude CLI: {e}"})
         os.unlink(mcp_config_path)
         return
+
+    # Drain stderr concurrently to prevent deadlock if the stderr pipe buffer fills
+    stderr_task = asyncio.create_task(proc.stderr.read())
 
     buffer = ""
     async for chunk in proc.stdout:
@@ -411,7 +417,8 @@ async def _run_cli_turn(
     except OSError:
         pass
 
-    stderr = (await proc.stderr.read()).decode("utf-8", errors="replace") if proc.stderr else ""
+    stderr_bytes = await stderr_task
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
     if stderr.strip():
         print(f"[CLI stderr]\n{stderr.strip()}", flush=True)
     if proc.returncode != 0 and stderr:

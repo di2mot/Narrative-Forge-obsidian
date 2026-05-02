@@ -315,26 +315,10 @@ export function registerContextMenu(
                 const selection = editor.getSelection();
                 if (!selection.trim()) return;
 
-                // Get file name + content for context
-                const activeFile = plugin.app.workspace.getActiveFile();
-                const fileName = activeFile?.name ?? "current file";
-                let fileContent = "";
-                if (activeFile) {
-                  try {
-                    fileContent = await plugin.app.vault.read(activeFile);
-                  } catch {
-                    // Ignore read errors
-                  }
-                }
-
-                const message =
-                  `[Selected text: "${selection}"]\n\n` +
-                  `Context from ${fileName}:\n${fileContent.slice(0, 8000)}\n\n` +
-                  `Please analyze this passage.`;
-
                 const chatView = await activateChat();
                 if (chatView) {
-                  chatView.injectMessage(message);
+                  chatView.capturedSelection = selection;
+                  chatView.injectMessage("Please analyze this selected passage.");
                 } else {
                   new Notice("Could not open chat panel.");
                 }
