@@ -5,16 +5,25 @@
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs production",
-    "ship": "npm run build"
+    "ship": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
-    "obsidian": "latest"
+    "@anthropic-ai/sdk": "^0.92.0",
+    "@google/generative-ai": "^0.24.1",
+    "@huggingface/transformers": "^4.2.0",
+    "@orama/orama": "^3.1.18",
+    "@orama/plugin-data-persistence": "^3.1.18",
+    "obsidian": "latest",
+    "openai": "^6.35.0"
   },
   "devDependencies": {
     "@types/node": "^18.0.0",
     "builtin-modules": "^3.3.0",
     "esbuild": "0.17.3",
     "tslib": "2.4.0",
-    "typescript": "4.7.4"
+    "typescript": "4.7.4",
+    "vitest": "^4.1.5"
   }
 }
