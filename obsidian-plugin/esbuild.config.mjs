@@ -31,7 +31,7 @@ const context = await esbuild.context({
   entryPoints: ["src/main.ts"],
   bundle: true,
   alias: {
-    "@huggingface/transformers": "./node_modules/@huggingface/transformers/dist/transformers.node.min.cjs"
+    "@huggingface/transformers": "./node_modules/@huggingface/transformers/dist/transformers.min.js"
   },
   external: [
     "obsidian",

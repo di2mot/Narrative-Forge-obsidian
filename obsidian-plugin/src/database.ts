@@ -4,6 +4,11 @@ import { pipeline, env } from "@huggingface/transformers";
 
 env.allowLocalModels = false;
 env.useBrowserCache = true;
+// Electron doesn't have SharedArrayBuffer (no COOP/COEP headers) — disable threading
+env.backends.onnx.wasm.proxy = false;
+env.backends.onnx.wasm.numThreads = 1;
+// onnxruntime-web can't find WASM files relative to the plugin bundle — use CDN
+env.backends.onnx.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/";
 
 export const EN_MODEL = "Xenova/all-MiniLM-L6-v2";
 export const MULTILINGUAL_MODEL = "Xenova/paraphrase-multilingual-MiniLM-L12-v2";
