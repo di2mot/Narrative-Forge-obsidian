@@ -64,8 +64,9 @@ export async function importBookLocally(
   app: App,
   bookDir: string,
   force: boolean = false,
-  embeddingModel?: string
-) {
+  embeddingModel?: string,
+  hashCache: Record<string, FileHashEntry> = {}
+): Promise<{ chapters_imported: number; updated_cache: Record<string, FileHashEntry> }> {
   const relBookDir = toVaultRelative(app, bookDir);
   const folderPath = relBookDir ? `${relBookDir}/chapters` : "chapters";
   const files = app.vault.getFiles().filter(
@@ -78,16 +79,47 @@ export async function importBookLocally(
 
   const modelName = embeddingModel ? resolveEmbeddingModel(embeddingModel) : undefined;
 
-  // Always clear and re-index. (Hash-based incremental indexing is a future optimization.)
-  await vectorDb.clear(modelName);
+  if (force) {
+    await vectorDb.clear(modelName);
+    hashCache = {};
+  } else {
+    await vectorDb.init(modelName);
+  }
+
+  const updatedCache: Record<string, FileHashEntry> = { ...hashCache };
+
+  // Remove stale cache entries for deleted files
+  const currentPaths = new Set(files.map(f => f.path));
+  for (const cachedPath of Object.keys(updatedCache)) {
+    if (!currentPaths.has(cachedPath)) {
+      await vectorDb.removeChunks(updatedCache[cachedPath].chunkIds);
+      delete updatedCache[cachedPath];
+    }
+  }
 
   let imported = 0;
 
   for (const file of files) {
     const content = await app.vault.read(file);
+    const hash = await hashContent(content);
+    const decision = reindexDecision(updatedCache[file.path], file.stat.mtime, hash);
+
+    if (decision === 'skip') continue;
+
+    if (decision === 'update-mtime') {
+      updatedCache[file.path] = { ...updatedCache[file.path], mtime: file.stat.mtime };
+      continue;
+    }
+
+    // 'reindex': remove old Orama docs, re-parse and re-embed
+    if (updatedCache[file.path]) {
+      await vectorDb.removeChunks(updatedCache[file.path].chunkIds);
+    }
+
     const chapter = parseChapter(content, file.name);
     if (!chapter) continue;
 
+    const newChunkIds: string[] = [];
     for (let sceneIdx = 0; sceneIdx < chapter.scenes.length; sceneIdx++) {
       const scene = chapter.scenes[sceneIdx];
       if (!scene.text.trim()) continue;
@@ -102,11 +134,14 @@ export async function importBookLocally(
           characters: scene.characters.join(","),
           filename: chapter.filename
         });
+        newChunkIds.push(id);
       }
     }
+
+    updatedCache[file.path] = { mtime: file.stat.mtime, hash, chunkIds: newChunkIds };
     imported++;
   }
 
   await vectorDb.saveToFile(app, relBookDir);
-  return { chapters_imported: imported };
+  return { chapters_imported: imported, updated_cache: updatedCache };
 }
