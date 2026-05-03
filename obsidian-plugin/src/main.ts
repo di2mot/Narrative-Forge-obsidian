@@ -15,8 +15,9 @@ import { BookManager, BookConfig } from "./book";
 import { NarrativeTimelineView } from "./timeline";
 import { WritingSession } from "./session";
 import { LocalServer } from "./local_server";
-import { importBookLocally } from "./importer";
+import { importBookLocally, FileHashEntry } from "./importer";
 import { vectorDb } from "./database";
+import { invalidatePromptCache } from "./agent";
 
 // ---------------------------------------------------------------------------
 // "Create new book" modal
@@ -102,6 +103,7 @@ export default class NarrativePlugin extends Plugin {
   private writingSession!: WritingSession;
   private localServer!: LocalServer;
   private currentBookRoot: string | null = null;
+  private startupReindexDone = false;  // Bug 10: prevent race with onActiveFileChange
   lastActiveMdPath: string | null = null;  // last focused .md file path (vault-relative)
 
   getCurrentBookRoot(): string | null {
@@ -275,6 +277,16 @@ export default class NarrativePlugin extends Plugin {
 
     this.registerAutoImport();
 
+    // Issue 4 fix: always invalidate prompt cache when CLAUDE.md changes,
+    // regardless of whether autoImport is enabled.
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        if (file instanceof TFile && file.name === "CLAUDE.md") {
+          invalidatePromptCache();
+        }
+      })
+    );
+
     // ---------------------------------------------------------------------------
     // Settings tab
     // ---------------------------------------------------------------------------
@@ -324,14 +336,30 @@ export default class NarrativePlugin extends Plugin {
     // Always track the last focused .md file for chat context
     this.lastActiveMdPath = file.path;
 
+    // Bug 10: don't override currentBookRoot while startup reindex is still running
+    if (!this.startupReindexDone) return;
+
     const result = await this.bookManager.findBook(file.path);
     const sidebar = this.getSidebarView();
 
     if (result) {
+      const prevRoot = this.currentBookRoot;
       this.currentBookRoot = result.bookRoot;
       this.api.setBaseUrl(result.config.backendUrl);
       void this.reloadCharacterCache();
       if (sidebar) void sidebar.refresh();
+
+      // Issue 2 fix: if the user switched to a different book, re-index its Orama DB
+      if (prevRoot !== result.bookRoot) {
+        const absDir = this.getAbsoluteBookDir();
+        if (absDir) {
+          console.log(`[Narrative Forge] Book changed to ${result.bookRoot || 'vault root'}, re-indexing...`);
+          vectorDb.loadFromFile(this.app, result.bookRoot, this.settings.embeddingModel)
+            .then(() => importBookLocally(this.app, absDir, false, this.settings.embeddingModel))
+            .then(() => console.log("[Narrative Forge] Book switch reindex done."))
+            .catch((e) => console.error("[Narrative Forge] Book switch reindex failed:", e));
+        }
+      }
     } else {
       // Don't reset currentBookRoot — keep last active book for chat.
       if (sidebar) sidebar.showNoBook();
@@ -636,30 +664,49 @@ Change in \`.narrative-book.json\` if running on a different port.
         if (!(file instanceof TFile)) return;
         if (!file.path.endsWith(".md")) return;
 
-        // Debounce: wait 2s after last modification before importing
         const existing = this.autoImportDebounceMap.get(file.path);
         if (existing) clearTimeout(existing);
 
         const timer = setTimeout(async () => {
           this.autoImportDebounceMap.delete(file.path);
-          try {
-            // Sync chapter metadata for files inside the chapters folder
-            const bookResult = await this.bookManager.findBook(file.path);
-            if (bookResult) {
-              const { config, bookRoot } = bookResult;
-              const chapterFolder = bookRoot
-                ? `${bookRoot}/${config.folders.chapters}`
-                : config.folders.chapters;
-              if (file.path.startsWith(chapterFolder)) {
-                await this.bookManager.syncChapterMetadata(file, bookRoot, config);
-              }
+          const bookResult = await this.bookManager.findBook(file.path).catch(() => null);
+          if (!bookResult) return;
+
+          const { config, bookRoot } = bookResult;
+          const chapterFolder = bookRoot
+            ? `${bookRoot}/${config.folders.chapters}`
+            : config.folders.chapters;
+          const isChapterFile = file.path.startsWith(chapterFolder + "/");
+
+          if (isChapterFile) {
+            await this.bookManager.syncChapterMetadata(file, bookRoot, config).catch(() => {});
+          }
+
+          await this.api.importBook(false, this.getAbsoluteBookDir(), this.getEmbeddingLanguage()).catch(() => {});
+
+          // Issue 3: only re-embed chapter files — editing character/location/world
+          // files doesn't change vector DB content, so skip the expensive re-index.
+          if (isChapterFile) {
+            const absDir = this.getAbsoluteBookDir();
+            if (absDir) {
+              (async () => {
+                try {
+                  const pluginData = (await this.loadData()) || {};
+                  const bookCache: Record<string, FileHashEntry> =
+                    pluginData.fileHashes?.[absDir] ?? {};
+                  const { updated_cache } = await importBookLocally(
+                    this.app, absDir, false, this.settings.embeddingModel, bookCache
+                  );
+                  const currentData = (await this.loadData()) || {};
+                  await this.saveData({
+                    ...currentData,
+                    fileHashes: { ...(currentData.fileHashes || {}), [absDir]: updated_cache }
+                  });
+                } catch (e) {
+                  console.warn("[Narrative Forge] Auto-reindex failed:", e);
+                }
+              })();
             }
-            // Trigger full incremental import (indexes chapters, characters, locations, world)
-            await this.api.importBook(false, this.getAbsoluteBookDir(), this.getEmbeddingLanguage()).catch(() => {
-              // Silent fail — backend may not be running
-            });
-          } catch {
-            // Silent fail — user may not have backend running
           }
         }, 2000);
 
@@ -669,16 +716,14 @@ Change in \`.narrative-book.json\` if running on a different port.
   }
 
   /**
-   * On startup: find all books in the vault and trigger incremental import
-   * for each one (hash-based, so unchanged files are skipped quickly).
+   * On startup: find the active (first) book in the vault and load/reindex it.
+   * Bug 1 fix: only index ONE book — vectorDb is a singleton and can't hold multiple books.
    */
   private async startupReindex(): Promise<void> {
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof FileSystemAdapter)) return;
     const vaultBase = adapter.getBasePath();
 
-    // vault.getFiles() and getAllLoadedFiles() skip dotfiles.
-    // Use adapter.list() to find .narrative-book.json in each top-level folder.
     const bookRoots: string[] = [];
 
     // Check vault root itself
@@ -697,45 +742,79 @@ Change in \`.narrative-book.json\` if running on a different port.
       }
     } catch { /* ignore */ }
 
-    for (const bookRoot of bookRoots) {
-      const markerPath = bookRoot ? `${bookRoot}/.narrative-book.json` : ".narrative-book.json";
-      const absBookDir = bookRoot ? `${vaultBase}/${bookRoot}` : vaultBase;
-
-      let backendUrl = "http://localhost:8000";
-      try {
-        const raw = await adapter.read(markerPath);
-        const config = JSON.parse(raw) as Partial<BookConfig>;
-        backendUrl = config.backendUrl ?? backendUrl;
-      } catch { /* ignore */ }
-
-      // Set currentBookRoot to the first book found
-      if (this.currentBookRoot == null) {
-        this.currentBookRoot = bookRoot;
-        this.api.setBaseUrl(backendUrl);
-        console.log(`[Narrative Forge] Active book: ${absBookDir}`);
-      }
-
-      // Load persisted DB for immediate search availability, then re-import to pick up changes
-      await vectorDb.loadFromFile(this.app, bookRoot, this.settings.embeddingModel);
-
-      try {
-        await importBookLocally(this.app, absBookDir, false, this.settings.embeddingModel);
-        console.log(`[Narrative Forge] Startup reindex done: ${bookRoot || "vault root"}`);
-      } catch (e) {
-        console.error("Startup reindex failed:", e);
+    // Determine which book to index: prefer the one containing the active file,
+    // otherwise fall back to the first one found.
+    const activeFile = this.app.workspace.getActiveFile();
+    let primaryRoot = bookRoots[0] ?? null;
+    if (activeFile && bookRoots.length > 1) {
+      for (const root of bookRoots) {
+        if (root && activeFile.path.startsWith(root + "/")) {
+          primaryRoot = root;
+          break;
+        }
       }
     }
+
+    if (primaryRoot === null) {
+      this.startupReindexDone = true;
+      return;
+    }
+
+    const bookRoot = primaryRoot;
+    const markerPath = bookRoot ? `${bookRoot}/.narrative-book.json` : ".narrative-book.json";
+    const absBookDir = bookRoot ? `${vaultBase}/${bookRoot}` : vaultBase;
+
+    let backendUrl = "http://localhost:8000";
+    try {
+      const raw = await adapter.read(markerPath);
+      const config = JSON.parse(raw) as Partial<BookConfig>;
+      backendUrl = config.backendUrl ?? backendUrl;
+    } catch { /* ignore */ }
+
+    this.currentBookRoot = bookRoot;
+    this.api.setBaseUrl(backendUrl);
+    console.log(`[Narrative Forge] Active book: ${absBookDir}`);
+
+    // Load persisted DB first for immediate search availability
+    await vectorDb.loadFromFile(this.app, bookRoot, this.settings.embeddingModel);
+
+    try {
+      const pluginData = (await this.loadData()) || {};
+      const bookCache: Record<string, FileHashEntry> = pluginData.fileHashes?.[absBookDir] ?? {};
+      const { updated_cache } = await importBookLocally(
+        this.app, absBookDir, false, this.settings.embeddingModel, bookCache
+      );
+      const currentData = (await this.loadData()) || {};
+      await this.saveData({
+        ...currentData,
+        fileHashes: { ...(currentData.fileHashes || {}), [absBookDir]: updated_cache }
+      });
+      console.log(`[Narrative Forge] Startup reindex done: ${bookRoot || "vault root"}`);
+    } catch (e) {
+      console.error("Startup reindex failed:", e);
+    }
+
+    this.startupReindexDone = true;
   }
 
   async runImport(force = false): Promise<void> {
     const notice = new Notice("Narrative Forge: Importing locally...", 0);
+    const absDir = this.getAbsoluteBookDir();
     try {
-      const result = await importBookLocally(this.app, this.getAbsoluteBookDir(), force, this.settings.embeddingModel);
-      notice.hide();
-      new Notice(
-        `Narrative Forge: Imported ${result.chapters_imported} chapter(s) into local vector database.`
+      const pluginData = (await this.loadData()) || {};
+      const bookCache: Record<string, FileHashEntry> = force
+        ? {}
+        : (pluginData.fileHashes?.[absDir!] ?? {});
+      const result = await importBookLocally(
+        this.app, absDir, force, this.settings.embeddingModel, bookCache
       );
-      // Refresh character cache
+      const currentData = (await this.loadData()) || {};
+      await this.saveData({
+        ...currentData,
+        fileHashes: { ...(currentData.fileHashes || {}), [absDir!]: result.updated_cache }
+      });
+      notice.hide();
+      new Notice(`Narrative Forge: Imported ${result.chapters_imported} chapter(s) into local vector database.`);
       void this.reloadCharacterCache();
     } catch (err) {
       notice.hide();

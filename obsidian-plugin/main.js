@@ -44658,6 +44658,21 @@ var LocalServer = class {
 
 // src/importer.ts
 var import_obsidian12 = require("obsidian");
+async function hashContent(content) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(content);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+function reindexDecision(cached, mtime, hash) {
+  if (!cached)
+    return "reindex";
+  if (cached.mtime === mtime)
+    return "skip";
+  if (cached.hash === hash)
+    return "update-mtime";
+  return "reindex";
+}
 var CHUNK_WORDS = 150;
 var CHUNK_OVERLAP = 30;
 function splitWords(text, window2, overlap) {
@@ -44686,7 +44701,7 @@ function toVaultRelative2(app, absPath) {
   }
   return absPath.replace(/^\/+/, "");
 }
-async function importBookLocally(app, bookDir, force = false, embeddingModel) {
+async function importBookLocally(app, bookDir, force = false, embeddingModel, hashCache = {}) {
   const relBookDir = toVaultRelative2(app, bookDir);
   const folderPath = relBookDir ? `${relBookDir}/chapters` : "chapters";
   const files = app.vault.getFiles().filter(
@@ -44696,13 +44711,38 @@ async function importBookLocally(app, bookDir, force = false, embeddingModel) {
     throw new Error(`Chapters folder not found or empty at ${folderPath}`);
   }
   const modelName = embeddingModel ? resolveEmbeddingModel(embeddingModel) : void 0;
-  await vectorDb.clear(modelName);
+  if (force) {
+    await vectorDb.clear(modelName);
+    hashCache = {};
+  } else {
+    await vectorDb.init(modelName);
+  }
+  const updatedCache = { ...hashCache };
+  const currentPaths = new Set(files.map((f) => f.path));
+  for (const cachedPath of Object.keys(updatedCache)) {
+    if (!currentPaths.has(cachedPath)) {
+      await vectorDb.removeChunks(updatedCache[cachedPath].chunkIds);
+      delete updatedCache[cachedPath];
+    }
+  }
   let imported = 0;
   for (const file of files) {
     const content = await app.vault.read(file);
+    const hash = await hashContent(content);
+    const decision = reindexDecision(updatedCache[file.path], file.stat.mtime, hash);
+    if (decision === "skip")
+      continue;
+    if (decision === "update-mtime") {
+      updatedCache[file.path] = { ...updatedCache[file.path], mtime: file.stat.mtime };
+      continue;
+    }
+    if (updatedCache[file.path]) {
+      await vectorDb.removeChunks(updatedCache[file.path].chunkIds);
+    }
     const chapter = parseChapter(content, file.name);
     if (!chapter)
       continue;
+    const newChunkIds = [];
     for (let sceneIdx = 0; sceneIdx < chapter.scenes.length; sceneIdx++) {
       const scene = chapter.scenes[sceneIdx];
       if (!scene.text.trim())
@@ -44718,12 +44758,14 @@ async function importBookLocally(app, bookDir, force = false, embeddingModel) {
           characters: scene.characters.join(","),
           filename: chapter.filename
         });
+        newChunkIds.push(id2);
       }
     }
+    updatedCache[file.path] = { mtime: file.stat.mtime, hash, chunkIds: newChunkIds };
     imported++;
   }
   await vectorDb.saveToFile(app, relBookDir);
-  return { chapters_imported: imported };
+  return { chapters_imported: imported, updated_cache: updatedCache };
 }
 
 // src/main.ts
@@ -45239,9 +45281,26 @@ Change in \`.narrative-book.json\` if running on a different port.
           if (isChapterFile) {
             const absDir = this.getAbsoluteBookDir();
             if (absDir) {
-              importBookLocally(this.app, absDir, false, this.settings.embeddingModel).catch((e) => {
-                console.warn("[Narrative Forge] Auto-reindex failed:", e);
-              });
+              (async () => {
+                try {
+                  const pluginData = await this.loadData() || {};
+                  const bookCache = pluginData.fileHashes?.[absDir] ?? {};
+                  const { updated_cache } = await importBookLocally(
+                    this.app,
+                    absDir,
+                    false,
+                    this.settings.embeddingModel,
+                    bookCache
+                  );
+                  const currentData = await this.loadData() || {};
+                  await this.saveData({
+                    ...currentData,
+                    fileHashes: { ...currentData.fileHashes || {}, [absDir]: updated_cache }
+                  });
+                } catch (e) {
+                  console.warn("[Narrative Forge] Auto-reindex failed:", e);
+                }
+              })();
             }
           }
         }, 2e3);
@@ -45301,7 +45360,20 @@ Change in \`.narrative-book.json\` if running on a different port.
     console.log(`[Narrative Forge] Active book: ${absBookDir}`);
     await vectorDb.loadFromFile(this.app, bookRoot, this.settings.embeddingModel);
     try {
-      await importBookLocally(this.app, absBookDir, false, this.settings.embeddingModel);
+      const pluginData = await this.loadData() || {};
+      const bookCache = pluginData.fileHashes?.[absBookDir] ?? {};
+      const { updated_cache } = await importBookLocally(
+        this.app,
+        absBookDir,
+        false,
+        this.settings.embeddingModel,
+        bookCache
+      );
+      const currentData = await this.loadData() || {};
+      await this.saveData({
+        ...currentData,
+        fileHashes: { ...currentData.fileHashes || {}, [absBookDir]: updated_cache }
+      });
       console.log(`[Narrative Forge] Startup reindex done: ${bookRoot || "vault root"}`);
     } catch (e) {
       console.error("Startup reindex failed:", e);
@@ -45310,12 +45382,24 @@ Change in \`.narrative-book.json\` if running on a different port.
   }
   async runImport(force = false) {
     const notice = new import_obsidian13.Notice("Narrative Forge: Importing locally...", 0);
+    const absDir = this.getAbsoluteBookDir();
     try {
-      const result = await importBookLocally(this.app, this.getAbsoluteBookDir(), force, this.settings.embeddingModel);
-      notice.hide();
-      new import_obsidian13.Notice(
-        `Narrative Forge: Imported ${result.chapters_imported} chapter(s) into local vector database.`
+      const pluginData = await this.loadData() || {};
+      const bookCache = force ? {} : pluginData.fileHashes?.[absDir] ?? {};
+      const result = await importBookLocally(
+        this.app,
+        absDir,
+        force,
+        this.settings.embeddingModel,
+        bookCache
       );
+      const currentData = await this.loadData() || {};
+      await this.saveData({
+        ...currentData,
+        fileHashes: { ...currentData.fileHashes || {}, [absDir]: result.updated_cache }
+      });
+      notice.hide();
+      new import_obsidian13.Notice(`Narrative Forge: Imported ${result.chapters_imported} chapter(s) into local vector database.`);
       void this.reloadCharacterCache();
     } catch (err) {
       notice.hide();
