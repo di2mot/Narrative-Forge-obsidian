@@ -1,4 +1,4 @@
-import { create, insert, search, Orama } from "@orama/orama";
+import { create, insert, remove, search, Orama } from "@orama/orama";
 import { persist, restore } from "@orama/plugin-data-persistence";
 import { pipeline, env } from "@huggingface/transformers";
 
@@ -113,6 +113,17 @@ export class VectorDatabase {
   async clear(modelName?: string) {
     this.db = null;
     await this.init(modelName);
+  }
+
+  async removeChunks(ids: string[]): Promise<void> {
+    if (!this.db || ids.length === 0) return;
+    for (const id of ids) {
+      try {
+        await remove(this.db!, id);
+      } catch {
+        // ignore — chunk may have been removed already
+      }
+    }
   }
 
   /** Save to vault — bookDir must be vault-relative. */
