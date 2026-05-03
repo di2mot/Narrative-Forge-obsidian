@@ -43226,6 +43226,8 @@ var w3 = Object.keys(Wr);
 // src/database.ts
 _e.allowLocalModels = false;
 _e.useBrowserCache = true;
+if (!_e.backends.onnx.wasm)
+  _e.backends.onnx.wasm = {};
 _e.backends.onnx.wasm.proxy = false;
 _e.backends.onnx.wasm.numThreads = 1;
 _e.backends.onnx.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/";
