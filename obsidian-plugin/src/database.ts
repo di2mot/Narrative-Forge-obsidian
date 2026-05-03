@@ -9,7 +9,9 @@ export const EN_MODEL = "Xenova/all-MiniLM-L6-v2";
 export const MULTILINGUAL_MODEL = "Xenova/paraphrase-multilingual-MiniLM-L12-v2";
 
 export function resolveEmbeddingModel(setting: string): string {
-  return setting === "en" ? EN_MODEL : MULTILINGUAL_MODEL;
+  if (setting === "en") return EN_MODEL;
+  if (setting === "multilingual") return MULTILINGUAL_MODEL;
+  return setting; // already a full model name
 }
 
 export interface SceneMetadata {
@@ -31,8 +33,9 @@ export class VectorDatabase {
    * Safe to call multiple times — only creates what's missing.
    */
   async init(modelName?: string) {
-    if (modelName && modelName !== this.currentModelName) {
-      this.currentModelName = modelName;
+    const resolved = modelName ? resolveEmbeddingModel(modelName) : this.currentModelName;
+    if (resolved !== this.currentModelName) {
+      this.currentModelName = resolved;
       this.embedder = null; // model changed — reload
     }
 

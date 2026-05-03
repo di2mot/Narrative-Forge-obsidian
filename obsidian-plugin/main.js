@@ -43229,7 +43229,11 @@ _e.useBrowserCache = true;
 var EN_MODEL = "Xenova/all-MiniLM-L6-v2";
 var MULTILINGUAL_MODEL = "Xenova/paraphrase-multilingual-MiniLM-L12-v2";
 function resolveEmbeddingModel(setting) {
-  return setting === "en" ? EN_MODEL : MULTILINGUAL_MODEL;
+  if (setting === "en")
+    return EN_MODEL;
+  if (setting === "multilingual")
+    return MULTILINGUAL_MODEL;
+  return setting;
 }
 var VectorDatabase = class {
   db = null;
@@ -43240,8 +43244,9 @@ var VectorDatabase = class {
    * Safe to call multiple times — only creates what's missing.
    */
   async init(modelName) {
-    if (modelName && modelName !== this.currentModelName) {
-      this.currentModelName = modelName;
+    const resolved = modelName ? resolveEmbeddingModel(modelName) : this.currentModelName;
+    if (resolved !== this.currentModelName) {
+      this.currentModelName = resolved;
       this.embedder = null;
     }
     if (!this.db) {
