@@ -14,6 +14,9 @@ import { NarrativeSettingTab, NarrativeSettings, DEFAULT_SETTINGS } from "./sett
 import { BookManager, BookConfig } from "./book";
 import { NarrativeTimelineView } from "./timeline";
 import { WritingSession } from "./session";
+import { LocalServer } from "./local_server";
+import { importBookLocally } from "./importer";
+import { vectorDb } from "./database";
 
 // ---------------------------------------------------------------------------
 // "Create new book" modal
@@ -97,6 +100,7 @@ export default class NarrativePlugin extends Plugin {
 
   private autoImportDebounceMap = new Map<string, ReturnType<typeof setTimeout>>();
   private writingSession!: WritingSession;
+  private localServer!: LocalServer;
   private currentBookRoot: string | null = null;
   lastActiveMdPath: string | null = null;  // last focused .md file path (vault-relative)
 
@@ -114,8 +118,16 @@ export default class NarrativePlugin extends Plugin {
 
   async onload(): Promise<void> {
     console.log("[Narrative Forge] Loading plugin...");
-
     await this.loadSettings();
+
+    // Migrate old 'api' provider to 'anthropic'
+    if (this.settings.provider === "api") {
+      this.settings.provider = "anthropic";
+      await this.saveSettings();
+    }
+    
+    this.localServer = new LocalServer(this.app);
+    this.localServer.start(18000);
 
     this.api = new NarrativeAPI(this.getBackendUrl());
     this.backend = new BackendManager();
@@ -288,6 +300,7 @@ export default class NarrativePlugin extends Plugin {
 
   async onunload(): Promise<void> {
     console.log("[Narrative Forge] Unloading plugin...");
+    this.localServer.stop();
 
     if (this.settings.backendMode === "managed") {
       await this.backend.stop();
@@ -702,31 +715,31 @@ Change in \`.narrative-book.json\` if running on a different port.
         console.log(`[Narrative Forge] Active book: ${absBookDir}`);
       }
 
+      // Load persisted DB for immediate search availability, then re-import to pick up changes
+      await vectorDb.loadFromFile(this.app, bookRoot, this.settings.embeddingModel);
+
       try {
-        const api = new NarrativeAPI(backendUrl);
-        await api.importBook(false, absBookDir, this.getEmbeddingLanguage());
+        await importBookLocally(this.app, absBookDir, false, this.settings.embeddingModel);
         console.log(`[Narrative Forge] Startup reindex done: ${bookRoot || "vault root"}`);
-      } catch {
-        // Silent — backend may not be running yet
+      } catch (e) {
+        console.error("Startup reindex failed:", e);
       }
     }
   }
 
   async runImport(force = false): Promise<void> {
-    const notice = new Notice("Narrative Forge: Importing...", 0);
+    const notice = new Notice("Narrative Forge: Importing locally...", 0);
     try {
-      const result = await this.api.importBook(force, this.getAbsoluteBookDir(), this.getEmbeddingLanguage());
+      const result = await importBookLocally(this.app, this.getAbsoluteBookDir(), force, this.settings.embeddingModel);
       notice.hide();
       new Notice(
-        `Narrative Forge: Imported ${result.chapters_imported} chapter(s), ` +
-        `${result.characters_found} character(s).` +
-        (result.errors.length > 0 ? ` ${result.errors.length} error(s).` : "")
+        `Narrative Forge: Imported ${result.chapters_imported} chapter(s) into local vector database.`
       );
       // Refresh character cache
       void this.reloadCharacterCache();
     } catch (err) {
       notice.hide();
-      new Notice(`Narrative Forge: Import failed — ${err}`);
+      new Notice(`Narrative Forge: Local import failed — ${err}`);
     }
   }
 
