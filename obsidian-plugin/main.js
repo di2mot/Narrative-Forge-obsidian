@@ -45379,6 +45379,12 @@ Change in \`.narrative-book.json\` if running on a different port.
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    if (this.settings.provider === "local") {
+      const m = this.settings.modelName || "";
+      if (m.startsWith("claude") || m.startsWith("gemini") || m.startsWith("gpt")) {
+        this.settings.modelName = "";
+      }
+    }
   }
   async saveSettings() {
     await this.saveData(this.settings);

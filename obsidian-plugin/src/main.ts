@@ -665,6 +665,13 @@ Change in \`.narrative-book.json\` if running on a different port.
 
   async loadSettings(): Promise<void> {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    // Migration: clear modelName if it looks like a cloud model but provider is local
+    if (this.settings.provider === "local") {
+      const m = this.settings.modelName || "";
+      if (m.startsWith("claude") || m.startsWith("gemini") || m.startsWith("gpt")) {
+        this.settings.modelName = "";
+      }
+    }
   }
 
   async saveSettings(): Promise<void> {
