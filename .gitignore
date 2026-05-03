@@ -23,3 +23,6 @@ obsidian-plugin/node_modules/
 
 # Claude
 .claude
+
+# Superpowers internal docs
+docs/superpowers/
