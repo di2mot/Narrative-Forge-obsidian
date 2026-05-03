@@ -696,7 +696,9 @@ Change in \`.narrative-book.json\` if running on a different port.
             await this.bookManager.syncChapterMetadata(file, bookRoot, config).catch(() => {});
           }
 
-          await this.api.importBook(false, this.getAbsoluteBookDir(), this.getEmbeddingLanguage()).catch(() => {});
+          if (this.settings.provider === "cli") {
+            await this.api.importBook(false, this.getAbsoluteBookDir(), this.getEmbeddingLanguage()).catch(() => {});
+          }
 
           // Issue 3: only re-embed chapter files — editing character/location/world
           // files doesn't change vector DB content, so skip the expensive re-index.

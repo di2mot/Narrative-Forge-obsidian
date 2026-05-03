@@ -20286,7 +20286,7 @@ var AnthropicAgent = class {
     while (turn < 5) {
       turn++;
       const stream = await this.anthropic.messages.create({
-        model: this.modelName || "claude-3-5-sonnet-20241022",
+        model: this.modelName || "claude-sonnet-4-6",
         max_tokens: 4096,
         system: systemPrompt,
         messages: currentMessages,
@@ -20530,7 +20530,7 @@ var GeminiAgent = class {
   async *chatStream(messages, bookDir) {
     const systemPrompt = await buildSystemPrompt(this.app, bookDir);
     const model = this.genAI.getGenerativeModel({
-      model: this.modelName || "gemini-1.5-pro-latest",
+      model: this.modelName || "gemini-3-flash-preview",
       systemInstruction: { role: "system", parts: [{ text: systemPrompt }] },
       tools: GEMINI_TOOLS
     });
@@ -45359,8 +45359,10 @@ Change in \`.narrative-book.json\` if running on a different port.
             await this.bookManager.syncChapterMetadata(file, bookRoot, config).catch(() => {
             });
           }
-          await this.api.importBook(false, this.getAbsoluteBookDir(), this.getEmbeddingLanguage()).catch(() => {
-          });
+          if (this.settings.provider === "cli") {
+            await this.api.importBook(false, this.getAbsoluteBookDir(), this.getEmbeddingLanguage()).catch(() => {
+            });
+          }
           if (isChapterFile) {
             const absDir = this.getAbsoluteBookDir();
             if (absDir) {
