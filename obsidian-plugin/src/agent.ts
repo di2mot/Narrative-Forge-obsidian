@@ -30,7 +30,7 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   },
   {
     name: "read_scene",
-    description: "Read the raw text of a specific scene from a chapter file. Use this to get the exact text before editing.",
+    description: "Read a specific scene with file-relative line numbers. For editing, prefer read_chapter which shows the full file with line numbers — use those coordinates with edit_scene.",
     input_schema: {
       type: "object",
       properties: {
@@ -42,15 +42,18 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   },
   {
     name: "edit_scene",
-    description: "Edit a specific scene in a chapter file by replacing exact text. The old_text must match exactly what is in the file.",
+    description: "Edit text in a chapter file using precise line and character positions (LSP-style). Always call read_chapter first to see the file with file-relative line numbers, then specify the exact range to replace. start_char and end_char are 0-indexed within the line; end_char is exclusive.",
     input_schema: {
       type: "object",
       properties: {
-        filename: { type: "string", description: "Chapter filename" },
-        old_text: { type: "string", description: "The exact text to replace" },
-        new_text: { type: "string", description: "The replacement text" },
+        filename: { type: "string", description: "Chapter filename e.g. '01-siege.md'" },
+        start_line: { type: "integer", description: "Start line number (1-indexed, inclusive)" },
+        start_char: { type: "integer", description: "Start character offset on start_line (0-indexed, inclusive)" },
+        end_line: { type: "integer", description: "End line number (1-indexed, inclusive)" },
+        end_char: { type: "integer", description: "End character offset on end_line (0-indexed, exclusive)" },
+        new_text: { type: "string", description: "Replacement text (may span multiple lines)" },
       },
-      required: ["filename", "old_text", "new_text"],
+      required: ["filename", "start_line", "start_char", "end_line", "end_char", "new_text"],
     },
   },
   {
@@ -78,7 +81,17 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
 // Helpers
 // ---------------------------------------------------------------------------
 
+// System prompt cache — keyed by bookDir, invalidated when CLAUDE.md changes.
+const promptCache = new Map<string, string>();
+
+export function invalidatePromptCache(bookDir?: string) {
+  if (bookDir) promptCache.delete(bookDir);
+  else promptCache.clear();
+}
+
 async function buildSystemPrompt(app: any, bookDir: string): Promise<string> {
+  const cached = promptCache.get(bookDir);
+  if (cached) return cached;
   const BASE_PROMPT = `You are an expert fiction writing assistant. You help authors write, edit, and maintain consistency in their books.
 
 ## Your capabilities
@@ -151,7 +164,9 @@ You MUST follow everything in CLAUDE.md when writing or editing.`;
     console.warn("Failed to read CLAUDE.md:", e);
   }
 
-  return parts.join("\n\n---\n\n");
+  const result = parts.join("\n\n---\n\n");
+  promptCache.set(bookDir, result);
+  return result;
 }
 
 const LOCAL_TOOL_NAMES = new Set([
@@ -258,7 +273,7 @@ export class AnthropicAgent implements BaseAgent {
       currentMessages.push({ role: "user", content: toolResultsContent });
     }
 
-    yield { type: "done", data: {} };
+    yield { type: "done", data: { messages: currentMessages } };
   }
 }
 
@@ -366,7 +381,7 @@ export class OpenAIAgent implements BaseAgent {
           for (const tc of delta.tool_calls) {
             const idx = tc.index;
             if (!toolUsesMap[idx]) {
-              toolUsesMap[idx] = { type: "tool_use", id: tc.id || `call_${Math.random().toString(36).substring(7)}`, name: tc.function?.name || "", input: "" };
+              toolUsesMap[idx] = { type: "tool_use", id: tc.id || `call_${Math.random().toString(36).substring(2)}`, name: tc.function?.name || "", input: "" };
               yield { type: "tool_use", data: { name: toolUsesMap[idx].name } };
             }
             if (tc.function?.arguments) {
@@ -395,7 +410,7 @@ export class OpenAIAgent implements BaseAgent {
       currentMessages.push({ role: "user", content: toolResultsContent });
     }
 
-    yield { type: "done", data: {} };
+    yield { type: "done", data: { messages: currentMessages } };
   }
 }
 
@@ -415,16 +430,24 @@ function mapAnthropicToGeminiMessages(messages: Anthropic.MessageParam[]): any[]
         const texts = m.content.filter((c: any) => c.type === "text");
         const toolResults = m.content.filter((c: any) => c.type === "tool_result");
         
-        if (texts.length > 0) parts.push({ text: texts.map((t: any) => t.text).join("\n") });
-        for (const tr of toolResults as any[]) {
-          parts.push({
-            functionResponse: {
-              name: tr.tool_use_id.replace("call_", ""), // Gemini uses just names usually
-              response: { result: tr.content }
-            }
-          });
+        if (texts.length > 0) {
+          geminiMsgs.push({ role: "user", parts: [{ text: texts.map((t: any) => t.text).join("\n") }] });
         }
-        if (parts.length > 0) geminiMsgs.push({ role: "user", parts });
+        
+        if (toolResults.length > 0) {
+          const funcParts = toolResults.map((tr: any) => {
+            const fnName = tr.tool_use_id.startsWith("gf:") 
+              ? tr.tool_use_id.split(":")[1] 
+              : tr.tool_use_id.replace(/^call_/, "").replace(/_\d+.*$/, "");
+            return {
+              functionResponse: {
+                name: fnName,
+                response: { result: tr.content }
+              }
+            };
+          });
+          geminiMsgs.push({ role: "function", parts: funcParts });
+        }
       }
     } else if (m.role === "assistant") {
       if (typeof m.content === "string") {
@@ -512,7 +535,7 @@ export class GeminiAgent implements BaseAgent {
           for (const call of calls) {
             const tu = {
               type: "tool_use",
-              id: `call_${call.name}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+              id: `gf:${call.name}:${Date.now()}`,
               name: call.name,
               input: call.args
             };
@@ -533,13 +556,10 @@ export class GeminiAgent implements BaseAgent {
       if (toolUses.length === 0) break;
 
       const toolResultsContent = await executeTools(toolUses, this.localTools, this.api, bookDir);
-      
-      // Gemini expects functionResponse format, we map tool_result in the next iteration.
-      // But we have to make sure the tool_use_id matches.
       currentMessages.push({ role: "user", content: toolResultsContent });
     }
 
-    yield { type: "done", data: {} };
+    yield { type: "done", data: { messages: currentMessages } };
   }
 }
 

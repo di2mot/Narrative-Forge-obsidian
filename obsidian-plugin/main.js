@@ -20069,7 +20069,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "read_scene",
-    description: "Read the raw text of a specific scene from a chapter file. Use this to get the exact text before editing.",
+    description: "Read a specific scene with file-relative line numbers. For editing, prefer read_chapter which shows the full file with line numbers \u2014 use those coordinates with edit_scene.",
     input_schema: {
       type: "object",
       properties: {
@@ -20081,15 +20081,18 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "edit_scene",
-    description: "Edit a specific scene in a chapter file by replacing exact text. The old_text must match exactly what is in the file.",
+    description: "Edit text in a chapter file using precise line and character positions (LSP-style). Always call read_chapter first to see the file with file-relative line numbers, then specify the exact range to replace. start_char and end_char are 0-indexed within the line; end_char is exclusive.",
     input_schema: {
       type: "object",
       properties: {
-        filename: { type: "string", description: "Chapter filename" },
-        old_text: { type: "string", description: "The exact text to replace" },
-        new_text: { type: "string", description: "The replacement text" }
+        filename: { type: "string", description: "Chapter filename e.g. '01-siege.md'" },
+        start_line: { type: "integer", description: "Start line number (1-indexed, inclusive)" },
+        start_char: { type: "integer", description: "Start character offset on start_line (0-indexed, inclusive)" },
+        end_line: { type: "integer", description: "End line number (1-indexed, inclusive)" },
+        end_char: { type: "integer", description: "End character offset on end_line (0-indexed, exclusive)" },
+        new_text: { type: "string", description: "Replacement text (may span multiple lines)" }
       },
-      required: ["filename", "old_text", "new_text"]
+      required: ["filename", "start_line", "start_char", "end_line", "end_char", "new_text"]
     }
   },
   {
