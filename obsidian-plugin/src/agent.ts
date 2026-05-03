@@ -5,6 +5,56 @@ import type { ChatEvent, NarrativeAPI } from "./api";
 import { LocalToolExecutor } from "./tools";
 
 // ---------------------------------------------------------------------------
+// Node fetch — bypasses CORS (app://obsidian.md origin is blocked by local LLM servers)
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function makeNodeFetch(): typeof fetch {
+  return async function nodeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    const urlStr = input.toString();
+    const urlObj = new URL(urlStr);
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const lib: any = urlObj.protocol === "https:" ? require("https") : require("http");
+
+    return new Promise((resolve, reject) => {
+      const headers: Record<string, string> = {};
+      if (init?.headers) {
+        new Headers(init.headers as HeadersInit).forEach((v, k) => { headers[k] = v; });
+      }
+
+      const req = lib.request(
+        {
+          hostname: urlObj.hostname,
+          port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
+          path: urlObj.pathname + urlObj.search,
+          method: init?.method || "GET",
+          headers,
+        },
+        (res: any) => {
+          const resHeaders = new Headers();
+          for (const [k, v] of Object.entries(res.headers as Record<string, string | string[]>)) {
+            resHeaders.set(k, Array.isArray(v) ? v.join(", ") : v);
+          }
+          const stream = new ReadableStream({
+            start(controller) {
+              res.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
+              res.on("end", () => controller.close());
+              res.on("error", (e: Error) => controller.error(e));
+            },
+          });
+          resolve(new Response(stream, { status: res.statusCode, headers: resHeaders }));
+        }
+      );
+      req.on("error", reject);
+      if (init?.body) req.write(init.body);
+      req.end();
+    });
+  } as typeof fetch;
+}
+
+const NODE_FETCH = makeNodeFetch();
+
+// ---------------------------------------------------------------------------
 // Base Definitions
 // ---------------------------------------------------------------------------
 
@@ -372,7 +422,7 @@ export class OpenAIAgent implements BaseAgent {
   private openai: OpenAI;
 
   constructor(apiKey: string, private modelName: string, private localTools: LocalToolExecutor, private api: NarrativeAPI, private app: any, baseURL?: string) {
-    this.openai = new OpenAI({ apiKey: apiKey || "ollama", dangerouslyAllowBrowser: true, baseURL, fetch: globalThis.fetch.bind(globalThis) });
+    this.openai = new OpenAI({ apiKey: apiKey || "ollama", dangerouslyAllowBrowser: true, baseURL, fetch: NODE_FETCH });
   }
 
   async *chatStream(messages: Anthropic.MessageParam[], bookDir: string): AsyncGenerator<ChatEvent> {

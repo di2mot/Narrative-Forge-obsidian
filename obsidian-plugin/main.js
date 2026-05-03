@@ -20054,6 +20054,49 @@ var GoogleGenerativeAI = class {
 };
 
 // src/agent.ts
+function makeNodeFetch() {
+  return async function nodeFetch(input, init) {
+    const urlStr = input.toString();
+    const urlObj = new URL(urlStr);
+    const lib = urlObj.protocol === "https:" ? require("https") : require("http");
+    return new Promise((resolve, reject) => {
+      const headers = {};
+      if (init?.headers) {
+        new Headers(init.headers).forEach((v3, k) => {
+          headers[k] = v3;
+        });
+      }
+      const req = lib.request(
+        {
+          hostname: urlObj.hostname,
+          port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
+          path: urlObj.pathname + urlObj.search,
+          method: init?.method || "GET",
+          headers
+        },
+        (res) => {
+          const resHeaders = new Headers();
+          for (const [k, v3] of Object.entries(res.headers)) {
+            resHeaders.set(k, Array.isArray(v3) ? v3.join(", ") : v3);
+          }
+          const stream = new ReadableStream({
+            start(controller) {
+              res.on("data", (chunk) => controller.enqueue(new Uint8Array(chunk)));
+              res.on("end", () => controller.close());
+              res.on("error", (e) => controller.error(e));
+            }
+          });
+          resolve(new Response(stream, { status: res.statusCode, headers: resHeaders }));
+        }
+      );
+      req.on("error", reject);
+      if (init?.body)
+        req.write(init.body);
+      req.end();
+    });
+  };
+}
+var NODE_FETCH = makeNodeFetch();
 var TOOL_DEFINITIONS = [
   {
     name: "search_semantic",
@@ -20392,7 +20435,7 @@ var OpenAIAgent = class {
     this.localTools = localTools;
     this.api = api;
     this.app = app;
-    this.openai = new OpenAI({ apiKey: apiKey || "ollama", dangerouslyAllowBrowser: true, baseURL, fetch: globalThis.fetch.bind(globalThis) });
+    this.openai = new OpenAI({ apiKey: apiKey || "ollama", dangerouslyAllowBrowser: true, baseURL, fetch: NODE_FETCH });
   }
   openai;
   async *chatStream(messages, bookDir) {
