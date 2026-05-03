@@ -43294,6 +43294,28 @@ var VectorDatabase = class {
 var vectorDb = new VectorDatabase();
 
 // src/tools.ts
+function addLineNumbers(text, startLine = 1) {
+  const lines = text.split("\n");
+  const lastNum = startLine + lines.length - 1;
+  const width = String(lastNum).length;
+  return lines.map((line, i) => `${String(startLine + i).padStart(width, " ")}: ${line}`).join("\n");
+}
+function applyLspEdit(content, startLine, startChar, endLine, endChar, newText) {
+  const lines = content.split("\n");
+  if (startLine < 1 || endLine < startLine || endLine > lines.length) {
+    return { error: `Invalid range: file has ${lines.length} lines.` };
+  }
+  const prefix = lines[startLine - 1].slice(0, startChar);
+  const suffix = lines[endLine - 1].slice(endChar);
+  const newLines = newText.split("\n");
+  newLines[0] = prefix + newLines[0];
+  newLines[newLines.length - 1] += suffix;
+  return [
+    ...lines.slice(0, startLine - 1),
+    ...newLines,
+    ...lines.slice(endLine)
+  ].join("\n");
+}
 var DIALOGUE_RE2 = /^\[character:\s*[^\]]+\]\s*[—–-]/;
 var COLON_RE = /^(?:\*\*|__)*([А-ЯІЇЄA-Z][^:\*\_]{1,30})(?:\*\*|__)*:\s+(.+)$/;
 function toVaultRelative(app, absPath) {
@@ -43371,8 +43393,11 @@ ${r.text}
       return `Scene ${idx} not found. Chapter has ${chapter.scenes.length} scenes.`;
     }
     const scene = chapter.scenes[idx];
+    const fmMatch = content.match(/^---\n[\s\S]*?\n---\n/);
+    const fmLineCount = fmMatch ? fmMatch[0].split("\n").length - 1 : 0;
+    const fileLineStart = fmLineCount + scene.line_start + 1;
     return `[Scene ${idx} \u2014 ${scene.location} \u2014 ${scene.timeline}]
-${scene.text}`;
+${addLineNumbers(scene.text, fileLineStart)}`;
   }
   async read_chapter(args) {
     const file = this.getFile(args.filename);
@@ -43381,31 +43406,31 @@ ${scene.text}`;
     const content = await this.app.vault.read(file);
     const MAX_CHARS = 8e3;
     if (content.length > MAX_CHARS) {
-      return content.slice(0, MAX_CHARS) + `
+      return addLineNumbers(content.slice(0, MAX_CHARS)) + `
 
-[NOTE: Content truncated at ${MAX_CHARS} chars. Use read_scene with scene_index to read specific scenes.]`;
+[NOTE: Content truncated at ${MAX_CHARS} chars. Use read_scene with scene_index for specific scenes.]`;
     }
-    return content;
+    return addLineNumbers(content);
   }
   async edit_scene(args) {
     const file = this.getFile(args.filename);
     if (!file)
       return `File not found: ${args.filename}. Available folders: chapters/, notes/`;
     const content = await this.app.vault.read(file);
-    const count3 = content.split(args.old_text).length - 1;
-    if (count3 === 0) {
-      const normContent = content.split(/\s+/).join(" ");
-      const normOld = args.old_text.split(/\s+/).join(" ");
-      if (normContent.includes(normOld) && normContent.split(normOld).length - 1 === 1) {
-        return "Text not found exactly, but a similar text with different spaces exists. Please use `read_scene` again to copy the exact text, including correct newlines and spaces.";
-      }
-      return "Text not found in file. Make sure old_text matches exactly (including newlines and spaces).";
-    } else if (count3 > 1) {
-      return `Text found ${count3} times in the file. Please provide a larger block of text in \`old_text\` to ensure it is unique.`;
-    }
-    const newContent = content.replace(args.old_text, args.new_text);
-    await this.app.vault.modify(file, newContent);
-    return `Done. Replaced text in ${args.filename}.`;
+    const result = applyLspEdit(
+      content,
+      args.start_line,
+      args.start_char,
+      args.end_line,
+      args.end_char,
+      args.new_text
+    );
+    if (typeof result === "object")
+      return result.error;
+    await this.app.vault.modify(file, result);
+    const oldLineCount = args.end_line - args.start_line + 1;
+    const newLineCount = args.new_text.split("\n").length;
+    return `Replaced lines ${args.start_line}:${args.start_char}\u2013${args.end_line}:${args.end_char} in ${args.filename} (${oldLineCount} \u2192 ${newLineCount} lines).`;
   }
   async append_to_chapter(args) {
     const file = this.getFile(args.filename);

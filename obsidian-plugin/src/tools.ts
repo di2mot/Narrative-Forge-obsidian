@@ -120,7 +120,14 @@ export class LocalToolExecutor {
     }
 
     const scene = chapter.scenes[idx];
-    return `[Scene ${idx} — ${scene.location} — ${scene.timeline}]\n${scene.text}`;
+
+    // scene.line_start is 0-indexed from start of body (after frontmatter).
+    // Count frontmatter lines to get file-relative offset.
+    const fmMatch = content.match(/^---\n[\s\S]*?\n---\n/);
+    const fmLineCount = fmMatch ? fmMatch[0].split('\n').length - 1 : 0;
+    const fileLineStart = fmLineCount + scene.line_start + 1;
+
+    return `[Scene ${idx} — ${scene.location} — ${scene.timeline}]\n${addLineNumbers(scene.text, fileLineStart)}`;
   }
 
   async read_chapter(args: { filename: string }): Promise<string> {
@@ -129,33 +136,37 @@ export class LocalToolExecutor {
     const content = await this.app.vault.read(file);
     const MAX_CHARS = 8000;
     if (content.length > MAX_CHARS) {
-      return content.slice(0, MAX_CHARS) +
-        `\n\n[NOTE: Content truncated at ${MAX_CHARS} chars. Use read_scene with scene_index to read specific scenes.]`;
+      return addLineNumbers(content.slice(0, MAX_CHARS)) +
+        `\n\n[NOTE: Content truncated at ${MAX_CHARS} chars. Use read_scene with scene_index for specific scenes.]`;
     }
-    return content;
+    return addLineNumbers(content);
   }
 
-  async edit_scene(args: { filename: string; old_text: string; new_text: string }): Promise<string> {
+  async edit_scene(args: {
+    filename: string;
+    start_line: number;
+    start_char: number;
+    end_line: number;
+    end_char: number;
+    new_text: string;
+  }): Promise<string> {
     const file = this.getFile(args.filename);
     if (!file) return `File not found: ${args.filename}. Available folders: chapters/, notes/`;
 
     const content = await this.app.vault.read(file);
-    const count = content.split(args.old_text).length - 1;
+    const result = applyLspEdit(
+      content,
+      args.start_line, args.start_char,
+      args.end_line, args.end_char,
+      args.new_text
+    );
 
-    if (count === 0) {
-      const normContent = content.split(/\s+/).join(" ");
-      const normOld = args.old_text.split(/\s+/).join(" ");
-      if (normContent.includes(normOld) && normContent.split(normOld).length - 1 === 1) {
-        return "Text not found exactly, but a similar text with different spaces exists. Please use `read_scene` again to copy the exact text, including correct newlines and spaces.";
-      }
-      return "Text not found in file. Make sure old_text matches exactly (including newlines and spaces).";
-    } else if (count > 1) {
-      return `Text found ${count} times in the file. Please provide a larger block of text in \`old_text\` to ensure it is unique.`;
-    }
+    if (typeof result === 'object') return result.error;
 
-    const newContent = content.replace(args.old_text, args.new_text);
-    await this.app.vault.modify(file, newContent);
-    return `Done. Replaced text in ${args.filename}.`;
+    await this.app.vault.modify(file, result);
+    const oldLineCount = args.end_line - args.start_line + 1;
+    const newLineCount = args.new_text.split('\n').length;
+    return `Replaced lines ${args.start_line}:${args.start_char}–${args.end_line}:${args.end_char} in ${args.filename} (${oldLineCount} → ${newLineCount} lines).`;
   }
 
   async append_to_chapter(args: { filename: string; text: string }): Promise<string> {
