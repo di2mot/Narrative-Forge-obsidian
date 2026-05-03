@@ -5,4 +5,11 @@ export default defineConfig({
     environment: 'node',
     include: ['tests/**/*.test.ts'],
   },
+  resolve: {
+    alias: {
+      obsidian: new URL('./tests/__mocks__/obsidian.ts', import.meta.url).pathname,
+      './parser': new URL('./tests/__mocks__/parser.ts', import.meta.url).pathname,
+      './database': new URL('./tests/__mocks__/database.ts', import.meta.url).pathname,
+    },
+  },
 });

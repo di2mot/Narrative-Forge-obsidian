@@ -2,6 +2,34 @@ import { App, TFile, FileSystemAdapter } from "obsidian";
 import { parseChapter } from "./parser";
 import { vectorDb, resolveEmbeddingModel } from "./database";
 
+export interface FileHashEntry {
+  mtime: number;
+  hash: string;
+  chunkIds: string[];
+}
+
+export async function hashContent(content: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(content);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export type ReindexDecision = 'skip' | 'update-mtime' | 'reindex';
+
+export function reindexDecision(
+  cached: FileHashEntry | undefined,
+  mtime: number,
+  hash: string
+): ReindexDecision {
+  if (!cached) return 'reindex';
+  if (cached.mtime === mtime) return 'skip';
+  if (cached.hash === hash) return 'update-mtime';
+  return 'reindex';
+}
+
 const CHUNK_WORDS = 150;
 const CHUNK_OVERLAP = 30;
 
@@ -50,13 +78,8 @@ export async function importBookLocally(
 
   const modelName = embeddingModel ? resolveEmbeddingModel(embeddingModel) : undefined;
 
-  if (force) {
-    await vectorDb.clear(modelName);
-  } else {
-    // Non-force: still re-indexes everything (no hash tracking yet).
-    // clear() resets the db so we start fresh without duplicate entries.
-    await vectorDb.clear(modelName);
-  }
+  // Always clear and re-index. (Hash-based incremental indexing is a future optimization.)
+  await vectorDb.clear(modelName);
 
   let imported = 0;
 
