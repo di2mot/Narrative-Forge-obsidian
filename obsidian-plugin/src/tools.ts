@@ -2,6 +2,41 @@ import { App, TFile, normalizePath, FileSystemAdapter } from "obsidian";
 import { parseChapter } from "./parser";
 import { vectorDb } from "./database";
 
+export function addLineNumbers(text: string, startLine: number = 1): string {
+  const lines = text.split('\n');
+  const lastNum = startLine + lines.length - 1;
+  const width = String(lastNum).length;
+  return lines
+    .map((line, i) => `${String(startLine + i).padStart(width, ' ')}: ${line}`)
+    .join('\n');
+}
+
+export type LspEditResult = string | { error: string };
+
+export function applyLspEdit(
+  content: string,
+  startLine: number,
+  startChar: number,
+  endLine: number,
+  endChar: number,
+  newText: string
+): LspEditResult {
+  const lines = content.split('\n');
+  if (startLine < 1 || endLine < startLine || endLine > lines.length) {
+    return { error: `Invalid range: file has ${lines.length} lines.` };
+  }
+  const prefix = lines[startLine - 1].slice(0, startChar);
+  const suffix = lines[endLine - 1].slice(endChar);
+  const newLines = newText.split('\n');
+  newLines[0] = prefix + newLines[0];
+  newLines[newLines.length - 1] += suffix;
+  return [
+    ...lines.slice(0, startLine - 1),
+    ...newLines,
+    ...lines.slice(endLine),
+  ].join('\n');
+}
+
 const DIALOGUE_RE = /^\[character:\s*[^\]]+\]\s*[—–-]/;
 const COLON_RE = /^(?:\*\*|__)*([А-ЯІЇЄA-Z][^:\*\_]{1,30})(?:\*\*|__)*:\s+(.+)$/;
 
@@ -91,7 +126,13 @@ export class LocalToolExecutor {
   async read_chapter(args: { filename: string }): Promise<string> {
     const file = this.getFile(args.filename);
     if (!file) return `File not found: ${args.filename}. Available folders: chapters/, notes/`;
-    return await this.app.vault.read(file);
+    const content = await this.app.vault.read(file);
+    const MAX_CHARS = 8000;
+    if (content.length > MAX_CHARS) {
+      return content.slice(0, MAX_CHARS) +
+        `\n\n[NOTE: Content truncated at ${MAX_CHARS} chars. Use read_scene with scene_index to read specific scenes.]`;
+    }
+    return content;
   }
 
   async edit_scene(args: { filename: string; old_text: string; new_text: string }): Promise<string> {
