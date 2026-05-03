@@ -354,10 +354,24 @@ export default class NarrativePlugin extends Plugin {
         const absDir = this.getAbsoluteBookDir();
         if (absDir) {
           console.log(`[Narrative Forge] Book changed to ${result.bookRoot || 'vault root'}, re-indexing...`);
-          vectorDb.loadFromFile(this.app, result.bookRoot, this.settings.embeddingModel)
-            .then(() => importBookLocally(this.app, absDir, false, this.settings.embeddingModel))
-            .then(() => console.log("[Narrative Forge] Book switch reindex done."))
-            .catch((e) => console.error("[Narrative Forge] Book switch reindex failed:", e));
+          (async () => {
+            try {
+              await vectorDb.loadFromFile(this.app, result.bookRoot, this.settings.embeddingModel);
+              const pluginData = (await this.loadData()) || {};
+              const bookCache: Record<string, FileHashEntry> = pluginData.fileHashes?.[absDir] ?? {};
+              const { updated_cache } = await importBookLocally(
+                this.app, absDir, false, this.settings.embeddingModel, bookCache
+              );
+              const currentData = (await this.loadData()) || {};
+              await this.saveData({
+                ...currentData,
+                fileHashes: { ...(currentData.fileHashes || {}), [absDir]: updated_cache }
+              });
+              console.log("[Narrative Forge] Book switch reindex done.");
+            } catch (e) {
+              console.error("[Narrative Forge] Book switch reindex failed:", e);
+            }
+          })();
         }
       }
     } else {

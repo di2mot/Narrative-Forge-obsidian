@@ -66,3 +66,22 @@ async def chat(request: Request):
             yield f"data: {json.dumps(event.__dict__, ensure_ascii=False, default=str)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/api/tools")
+async def execute_tool_endpoint(request: Request):
+    from .tools import execute_tool
+    body = await request.json()
+    name = body.get("name")
+    inputs = body.get("input", {})
+    book_dir = body.get("book_dir") or str(BOOK_DIR)
+    
+    if not name:
+        raise HTTPException(400, "tool name required")
+        
+    try:
+        print(f"[API TOOL] {name}({json.dumps(inputs, ensure_ascii=False)})", flush=True)
+        result = execute_tool(name, inputs, db=None, book_dir=book_dir)
+        return {"status": "ok", "result": result}
+    except Exception as e:
+        raise HTTPException(500, f"Tool error: {str(e)}")

@@ -12,8 +12,12 @@ export interface NarrativeSettings {
   defaultBackendUrl: string;
   pythonPath: string;
   bookDir: string; // empty = vault root
-  provider: string; // 'cli' | 'api'
+  provider: string; // 'cli' | 'anthropic' | 'openai' | 'gemini' | 'local'
   apiKey: string;
+  openaiApiKey: string;
+  geminiApiKey: string;
+  localBaseUrl: string;
+  modelName: string;
   autoImport: boolean;
   embeddingModel: "en" | "multilingual";
 }
@@ -26,6 +30,10 @@ export const DEFAULT_SETTINGS: NarrativeSettings = {
   bookDir: "",
   provider: "cli",
   apiKey: "",
+  openaiApiKey: "",
+  geminiApiKey: "",
+  localBaseUrl: "http://localhost:11434/v1",
+  modelName: "",
   autoImport: true,
   embeddingModel: "multilingual",
 };
@@ -166,16 +174,45 @@ export class NarrativeSettingTab extends PluginSettingTab {
       .addDropdown((drop) =>
         drop
           .addOption("cli", "Claude CLI (uses local Claude subscription)")
-          .addOption("api", "Claude API (requires API key)")
-          .setValue(this.plugin.settings.provider)
+          .addOption("anthropic", "Anthropic API (Claude)")
+          .addOption("openai", "OpenAI API (ChatGPT)")
+          .addOption("gemini", "Google Gemini API")
+          .addOption("local", "Local LLM (Ollama, LM Studio)")
+          .setValue(this.plugin.settings.provider === "api" ? "anthropic" : this.plugin.settings.provider)
           .onChange(async (value) => {
             this.plugin.settings.provider = value;
+            
+            if (value === "anthropic" && !this.plugin.settings.modelName) {
+              this.plugin.settings.modelName = "claude-3-5-sonnet-20241022";
+            } else if (value === "openai" && !this.plugin.settings.modelName) {
+              this.plugin.settings.modelName = "gpt-4o";
+            } else if (value === "gemini" && !this.plugin.settings.modelName) {
+              this.plugin.settings.modelName = "gemini-1.5-pro-latest";
+            } else if (value === "local" && !this.plugin.settings.modelName) {
+              this.plugin.settings.modelName = "llama3.1";
+            }
+            
             await this.plugin.saveSettings();
             this.display();
           })
       );
 
-    if (this.plugin.settings.provider === "api") {
+    if (this.plugin.settings.provider !== "cli") {
+      new Setting(containerEl)
+        .setName("Model name")
+        .setDesc("Specific model to use (e.g., gpt-4o, claude-3-5-sonnet-20241022)")
+        .addText((text) =>
+          text
+            .setPlaceholder("Model ID")
+            .setValue(this.plugin.settings.modelName)
+            .onChange(async (value) => {
+              this.plugin.settings.modelName = value.trim();
+              await this.plugin.saveSettings();
+            })
+        );
+    }
+
+    if (this.plugin.settings.provider === "anthropic" || this.plugin.settings.provider === "api") {
       new Setting(containerEl)
         .setName("Anthropic API key")
         .setDesc("Your Anthropic API key (sk-ant-...).")
@@ -188,6 +225,50 @@ export class NarrativeSettingTab extends PluginSettingTab {
               await this.plugin.saveSettings();
             });
           text.inputEl.type = "password";
+          return text;
+        });
+    } else if (this.plugin.settings.provider === "openai") {
+      new Setting(containerEl)
+        .setName("OpenAI API key")
+        .setDesc("Your OpenAI API key (sk-...).")
+        .addText((text) => {
+          text
+            .setPlaceholder("sk-...")
+            .setValue(this.plugin.settings.openaiApiKey)
+            .onChange(async (value) => {
+              this.plugin.settings.openaiApiKey = value.trim();
+              await this.plugin.saveSettings();
+            });
+          text.inputEl.type = "password";
+          return text;
+        });
+    } else if (this.plugin.settings.provider === "gemini") {
+      new Setting(containerEl)
+        .setName("Gemini API key")
+        .setDesc("Your Google Gemini API key.")
+        .addText((text) => {
+          text
+            .setPlaceholder("AIza...")
+            .setValue(this.plugin.settings.geminiApiKey)
+            .onChange(async (value) => {
+              this.plugin.settings.geminiApiKey = value.trim();
+              await this.plugin.saveSettings();
+            });
+          text.inputEl.type = "password";
+          return text;
+        });
+    } else if (this.plugin.settings.provider === "local") {
+      new Setting(containerEl)
+        .setName("Local Base URL")
+        .setDesc("OpenAI-compatible endpoint (Ollama: http://localhost:11434/v1, LM Studio: http://localhost:1234/v1).")
+        .addText((text) => {
+          text
+            .setPlaceholder("http://localhost:11434/v1")
+            .setValue(this.plugin.settings.localBaseUrl)
+            .onChange(async (value) => {
+              this.plugin.settings.localBaseUrl = value.trim();
+              await this.plugin.saveSettings();
+            });
           return text;
         });
     }

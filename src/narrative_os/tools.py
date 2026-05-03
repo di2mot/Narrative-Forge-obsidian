@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 _DIALOGUE_RE = re.compile(r'^\[character:\s*[^\]]+\]\s*[—–-]')
-_COLON_RE = re.compile(r'^([А-ЯІЇЄA-Z][^:]{1,30}):\s+(.+)$')
+_COLON_RE = re.compile(r'^(?:\*\*|__)*([А-ЯІЇЄA-Z][^:\*\_]{1,30})(?:\*\*|__)*:\s+(.+)$')
 
 
 BOOK_DIR = Path(os.environ.get("NOS_BOOK_DIR", "."))
@@ -272,90 +272,30 @@ def _dispatch(name: str, inputs: dict, book_dir: Path | None = None) -> str:
             return f"File not found: {inputs['filename']}. Available folders: chapters/, notes/"
         return path.read_text(encoding="utf-8")
 
-    elif name == "edit_scene":
-        path = _resolve_file(BD, inputs["filename"])
-        if path is None:
-            return f"File not found: {inputs['filename']}. Available folders: chapters/, notes/"
-        content = path.read_text(encoding="utf-8")
-        old_text = inputs["old_text"]
-        new_text = inputs["new_text"]
-        if old_text not in content:
-            return "Text not found in file. Make sure old_text matches exactly."
-        new_content = content.replace(old_text, new_text, 1)
-        path.write_text(new_content, encoding="utf-8")
-        # Re-index the changed file
+    elif name in ("edit_scene", "append_to_chapter", "write_scene"):
+        import requests
         try:
-            from .importer import BookImporter
-            importer = BookImporter(BD)
-            importer._import_file(path)
-        except Exception:
-            pass
-        return f"Done. Replaced text in {inputs['filename']}."
-
-    elif name == "append_to_chapter":
-        path = _resolve_file(BD, inputs["filename"])
-        if path is None:
-            return f"File not found: {inputs['filename']}. Available folders: chapters/, notes/"
-        content = path.read_text(encoding="utf-8")
-        separator = "\n\n---\n\n" if content.strip() else ""
-        path.write_text(content + separator + inputs["text"], encoding="utf-8")
-        return f"Appended to {inputs['filename']}."
-
-    elif name == "write_scene":
-        path = _resolve_file(BD, inputs["filename"])
-        if path is None:
-            return f"File not found: {inputs['filename']}. Available folders: chapters/, notes/"
-
-        raw_text = inputs["text"].strip()
-        location = inputs.get("location", "").strip()
-        timeline = inputs.get("timeline", "").strip()
-
-        formatted_lines = []
-        for line in raw_text.splitlines():
-            stripped = line.strip()
-            if not stripped:
-                formatted_lines.append("")
-                continue
-            if _DIALOGUE_RE.match(stripped):
-                formatted_lines.append(stripped)
+            res = requests.post(
+                "http://localhost:18000/execute_tool",
+                json={"name": name, "input": inputs, "book_dir": str(BD)},
+                timeout=10
+            )
+            data = res.json()
+            if data.get("status") == "ok":
+                # Re-index the changed file
+                path = _resolve_file(BD, inputs["filename"])
+                if path:
+                    try:
+                        from .importer import BookImporter
+                        importer = BookImporter(BD)
+                        importer._import_file(path)
+                    except Exception:
+                        pass
+                return data.get("result", "Done.")
             else:
-                m = _COLON_RE.match(stripped)
-                if m:
-                    char_name = m.group(1).strip()
-                    dialogue_text = m.group(2).strip()
-                    formatted_lines.append(f"[character: {char_name}] — {dialogue_text}")
-                else:
-                    formatted_lines.append(stripped)
-
-        formatted_text = "\n".join(formatted_lines)
-
-        # Build scene block
-        scene_parts = []
-        if location or timeline:
-            meta_lines = []
-            if location:
-                meta_lines.append(f"location:: {location}")
-            if timeline:
-                meta_lines.append(f"timeline:: {timeline}")
-            scene_parts.append("\n".join(meta_lines))
-            scene_parts.append("")
-        scene_parts.append(formatted_text)
-        scene_block = "\n".join(scene_parts)
-
-        # Append with scene break separator
-        existing = path.read_text(encoding="utf-8")
-        separator = "\n\n---\n" if existing.strip() else ""
-        path.write_text(existing + separator + scene_block + "\n", encoding="utf-8")
-
-        # Re-index
-        try:
-            from .importer import BookImporter
-            importer = BookImporter(BD)
-            importer._import_file(path)
-        except Exception:
-            pass
-
-        return f"Written to {inputs['filename']}.\n\nFormatted text:\n{scene_block}"
+                return f"Error from Obsidian: {data.get('message', 'Unknown error')}"
+        except Exception as e:
+            return f"Failed to contact Obsidian plugin local server on port 18000. Is Obsidian running and Narrative Forge plugin enabled? Error: {e}"
 
     elif name == "reimport_book":
         from .importer import BookImporter

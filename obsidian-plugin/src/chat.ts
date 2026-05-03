@@ -5,6 +5,8 @@
 import { ItemView, WorkspaceLeaf, MarkdownRenderer, MarkdownView, Notice, Component, FileSystemAdapter } from "obsidian";
 import type { NarrativeAPI, ChatEvent } from "./api";
 import type NarrativePlugin from "./main";
+import { createAgent } from "./agent";
+import { LocalToolExecutor } from "./tools";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -18,6 +20,9 @@ export class NarrativeChatView extends ItemView {
   private api: NarrativeAPI;
   private plugin: NarrativePlugin;
   private messages: ChatMessage[] = [];
+  // Full Anthropic.MessageParam[] history including tool use/result blocks.
+  // Maintained separately from display messages for correct multi-turn context.
+  private apiHistory: any[] = [];
   private messagesEl!: HTMLElement;
   private inputEl!: HTMLTextAreaElement;
   private sendBtn!: HTMLButtonElement;
@@ -109,6 +114,7 @@ export class NarrativeChatView extends ItemView {
 
   private clearChat(): void {
     this.messages = [];
+    this.apiHistory = [];
     this.messagesEl.empty();
     this.appendSystemMessage(
       "Conversation cleared. Ask anything about your story."
@@ -168,27 +174,73 @@ export class NarrativeChatView extends ItemView {
     const toolUses: Array<{ name: string; input: Record<string, unknown> }> = [];
 
     try {
-      const provider = this.plugin.settings.provider === "api" ? "api" : undefined;
-      const apiKey = this.plugin.settings.provider === "api"
-        ? this.plugin.settings.apiKey || undefined
-        : undefined;
+      const provider = this.plugin.settings.provider;
+      const apiKey = provider === "openai" ? this.plugin.settings.openaiApiKey : 
+                     provider === "gemini" ? this.plugin.settings.geminiApiKey : 
+                     this.plugin.settings.apiKey; // Default to anthropic
+                     
+      const modelName = this.plugin.settings.modelName;
 
       // Build API messages: enrich the last user message with active file context
       const { messages: apiMessages, bookDir } = await this.buildApiMessages();
       const language = this.plugin.getEmbeddingLanguage();
-      console.log("[NOS chat] sending to", this.api.baseUrl, "bookDir=", bookDir, "lang=", language);
 
-      for await (const event of this.api.chatStream(
-        apiMessages,
-        provider,
-        apiKey,
-        bookDir,
-        language,
-      )) {
-        this.handleChatEvent(event, assistantEl, (text) => {
-          fullText += text;
-          this.updateAssistantMessage(assistantEl, fullText);
-        }, toolUses);
+      if (provider === "cli") {
+        console.log("[NOS chat] using backend stream (CLI), bookDir=", bookDir);
+        for await (const event of this.api.chatStream(
+          apiMessages,
+          provider,
+          apiKey,
+          bookDir,
+          language
+        )) {
+          this.handleChatEvent(event, assistantEl, (text) => {
+            fullText += text;
+            this.updateAssistantMessage(assistantEl, fullText);
+          }, toolUses);
+        }
+      } else {
+        if (!apiKey && provider !== "local") {
+           throw new Error(`API key is required for provider '${provider}'. Please set it in Narrative Forge settings.`);
+        }
+        console.log(`[NOS chat] using local TS agent (${provider}: ${modelName}), bookDir=`, bookDir);
+
+        const localTools = new LocalToolExecutor(this.plugin.app, bookDir || "");
+        const agent = createAgent(
+          provider, 
+          modelName, 
+          apiKey, 
+          localTools, 
+          this.api, 
+          this.plugin.app, 
+          this.plugin.settings.localBaseUrl
+        );
+
+        // Issue 1 fix: always append the new enriched user message to apiHistory
+        // so the agent sees both the old conversation AND the current message.
+        const lastUserMsg = apiMessages[apiMessages.length - 1];
+        if (lastUserMsg?.role === "user") {
+          if (this.apiHistory.length > 0) {
+            // History exists — append just the new message to it
+            this.apiHistory.push({ role: "user", content: lastUserMsg.content });
+          } else {
+            // First message — bootstrap apiHistory from apiMessages
+            this.apiHistory = [...(apiMessages as any[])];
+          }
+        }
+
+        for await (const event of agent.chatStream(
+          this.apiHistory as any,
+          bookDir || ""
+        )) {
+          if (event.type === "done" && event.data.messages) {
+            this.apiHistory = event.data.messages as any[];
+          }
+          this.handleChatEvent(event, assistantEl, (text) => {
+            fullText += text;
+            this.updateAssistantMessage(assistantEl, fullText);
+          }, toolUses);
+        }
       }
 
       this.messages.push({
@@ -202,10 +254,14 @@ export class NarrativeChatView extends ItemView {
       }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      this.updateAssistantMessage(
-        assistantEl,
-        `Error: ${errMsg}\n\nIs the backend running at ${this.plugin.getBackendUrl()}?`
-      );
+      let errorMessage = `Error: ${errMsg}`;
+      if (this.plugin.settings.provider === "cli") {
+        errorMessage += `\n\nIs the Python backend running at ${this.plugin.getBackendUrl()}?`;
+      } else if (this.plugin.settings.provider === "local") {
+        errorMessage += `\n\nIs your local LLM server running at ${this.plugin.settings.localBaseUrl}?`;
+      }
+      
+      this.updateAssistantMessage(assistantEl, errorMessage);
       new Notice(`Chat error: ${errMsg}`);
     } finally {
       this.isStreaming = false;

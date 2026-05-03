@@ -102,9 +102,9 @@ Open **Settings → Narrative Forge** to configure the plugin.
 
 | Provider | Setting | Notes |
 |----------|---------|-------|
-| Anthropic (Claude) | Provider: `Anthropic`, paste API key | Recommended: `claude-opus-4-5` or `claude-sonnet-4-6` |
+| Anthropic (Claude) | Provider: `Anthropic`, paste API key | Recommended: `claude-opus-4-5` or `claude-3-5-sonnet-20241022` |
 | OpenAI | Provider: `OpenAI`, paste API key | Recommended: `gpt-4o` |
-| Google Gemini | Provider: `Gemini`, paste API key | Recommended: `gemini-2.5-pro` |
+| Google Gemini | Provider: `Gemini`, paste API key | Recommended: `gemini-1.5-pro-latest` |
 | Local (Ollama) | Provider: `Local LLM`, Base URL: `http://localhost:11434/v1` | Model must support tool calling |
 | Local (LM Studio) | Provider: `Local LLM`, Base URL: `http://localhost:1234/v1` | Same requirement |
 
@@ -122,12 +122,21 @@ Make sure the Ollama server is running before opening Obsidian. Set:
 - **Local Base URL**: `http://localhost:11434/v1`
 - **Model Name**: `llama3.1` (exact name as shown by `ollama list`)
 
+### Local LLM setup (LM Studio)
+
+1. Open LM Studio, load a model that supports tool calling (check the model card)
+2. Go to **Local Server** tab and click **Start Server**
+3. In Narrative Forge settings:
+   - **Provider**: `Local LLM (Ollama, LM Studio)`
+   - **Local Base URL**: `http://localhost:1234/v1`
+   - **Model Name**: leave empty — LM Studio ignores this field and always uses the loaded model
+
 ### Embedding language
 
-The plugin uses `Xenova/all-MiniLM-L6-v2` (English, ~400 MB, downloaded once) by default.
-For non-English books, switch to **Multilingual** in settings to use `Xenova/multilingual-e5-small` (~500 MB).
+The plugin uses `Xenova/all-MiniLM-L6-v2` (English, ~90 MB, downloaded once) by default.
+For non-English books, switch to **Multilingual** in settings to use `Xenova/paraphrase-multilingual-MiniLM-L12-v2` (~470 MB).
 
-The model is downloaded on first import and cached in Obsidian's local storage. No API key required for indexing.
+The model is downloaded on first import and cached in the browser's local storage. No API key required for indexing.
 
 ---
 
@@ -320,9 +329,9 @@ Assign shortcuts in **Settings → Hotkeys** → search "Narrative Forge".
 - Add key facts to `CLAUDE.md`
 
 ### Local LLM tool calling fails
-- Not all local models support tool calling reliably. Use `llama3.1`, `qwen2.5`, or `mistral-nemo`
-- Enable **Tools in system prompt** in settings if your model ignores function schemas
-- Increase the model's context window to at least 8192 tokens in LM Studio / Ollama
+- Not all local models support tool calling reliably. Tested and working: `qwen2.5`, `mistral-nemo`, `llama3.1`, `gemma-3`
+- In LM Studio, make sure the loaded model has tool/function calling support enabled in the model card
+- Increase the model's context window to at least 8192 tokens in LM Studio (Settings → Context Length)
 
 ### Build errors
 ```bash
@@ -347,9 +356,6 @@ npm run dev
 # Production build
 npm run build
 
-# Run unit tests
-npm test
-
 # Auto-deploy to vault on build
 NOS_VAULT_PLUGIN_DIR="/path/to/vault/.obsidian/plugins/narrative-forge" npm run build
 ```
@@ -371,13 +377,9 @@ obsidian-plugin/src/
 └── ...
 ```
 
-### Running tests
+### Testing
 
-```bash
-cd obsidian-plugin && npm test
-```
-
-Tests cover pure logic only (hash utilities, LSP edit functions). Obsidian API integration is tested manually in Obsidian.
+Obsidian API integration is tested manually inside Obsidian. Core logic (hash utilities, LSP edit functions) can be tested by importing the modules directly in a Node.js environment.
 
 ---
 

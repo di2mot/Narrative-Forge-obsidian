@@ -30,6 +30,9 @@ const context = await esbuild.context({
   },
   entryPoints: ["src/main.ts"],
   bundle: true,
+  alias: {
+    "@huggingface/transformers": "./node_modules/@huggingface/transformers/dist/transformers.min.js"
+  },
   external: [
     "obsidian",
     "electron",
@@ -47,7 +50,7 @@ const context = await esbuild.context({
     ...builtins,
   ],
   format: "cjs",
-  target: "es2018",
+  target: "es2022",
   logLevel: "info",
   sourcemap: prod ? false : "inline",
   treeShaking: true,

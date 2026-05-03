@@ -20080,6 +20080,17 @@ var TOOL_DEFINITIONS = [
     }
   },
   {
+    name: "read_chapter",
+    description: "Read the full chapter file with file-relative line numbers. Always call this before edit_scene to obtain the correct line coordinates.",
+    input_schema: {
+      type: "object",
+      properties: {
+        filename: { type: "string", description: "Chapter filename e.g. '01-siege.md'" }
+      },
+      required: ["filename"]
+    }
+  },
+  {
     name: "edit_scene",
     description: "Edit text in a chapter file using precise line and character positions (LSP-style). Always call read_chapter first to see the file with file-relative line numbers, then specify the exact range to replace. start_char and end_char are 0-indexed within the line; end_char is exclusive.",
     input_schema: {
@@ -20110,8 +20121,20 @@ var TOOL_DEFINITIONS = [
     }
   },
   {
+    name: "append_to_chapter",
+    description: "Append raw text verbatim to the end of a chapter file, separated by a scene divider. Use this for notes, comments, or raw content that should not be reformatted.",
+    input_schema: {
+      type: "object",
+      properties: {
+        filename: { type: "string", description: "Chapter filename to append to" },
+        text: { type: "string", description: "Raw text to append" }
+      },
+      required: ["filename", "text"]
+    }
+  },
+  {
     name: "get_book_info",
-    description: "Get general information about the book (title, language, chapter count, character count).",
+    description: "Get general information about the book (chapter count). Call only when the author explicitly asks about indexing status.",
     input_schema: { type: "object", properties: {} }
   }
 ];
@@ -20126,57 +20149,63 @@ async function buildSystemPrompt(app, bookDir) {
   const cached = promptCache.get(bookDir);
   if (cached)
     return cached;
-  const BASE_PROMPT = `You are an expert fiction writing assistant. You help authors write, edit, and maintain consistency in their books.
+  const BASE_PROMPT = `You are an expert fiction writing assistant embedded in Obsidian. You help authors write, edit, and maintain narrative consistency across their book.
 
-## Your capabilities
-- Semantic search across all scenes and chapters
-- Reading and editing chapter files directly
-- Writing new scenes and dialogue directly into chapter files
-- Finding scenes by character, location, or concept
+## Available tools
+- \`get_book_info\` \u2014 returns the number of indexed chapters. Call this if the author asks about indexing status.
+- \`search_semantic\` \u2014 semantic similarity search across all scenes. Use this to find relevant context before writing.
+- \`read_scene\` \u2014 reads one scene from a chapter file (with file-relative line numbers).
+- \`read_chapter\` \u2014 reads the full chapter file with line numbers. Use this before editing.
+- \`edit_scene\` \u2014 replaces a range of lines in a chapter file (LSP-style, line+char coordinates).
+- \`write_scene\` \u2014 appends a new scene block to a chapter file.
+- \`append_to_chapter\` \u2014 appends raw text to a chapter file.
 
-## How to work
-- Start every session by calling \`get_book_info\` to confirm the book is indexed.
-- NEVER guess or fabricate story details \u2014 always use tools to look up information first
-- Before editing: always call read_scene or read_chapter to get the exact current text
-- To find relevant scenes: use search_semantic first, then read_scene for exact text
-- edit_scene requires exact text match \u2014 copy it precisely from read_scene output
-- Call multiple tools in sequence for complex tasks
-- Respond in the same language the author writes in
-- **NEVER ask for permission before using tools** \u2014 just use the tool immediately
-- If the message includes \`[Active file: filename]\`, use that filename directly in tool calls without asking
+## Editing workflow \u2014 follow this exactly
+1. Call \`read_chapter\` to see the file with line numbers.
+2. Identify the range to replace: note \`start_line\`, \`start_char\` (0-indexed), \`end_line\`, \`end_char\` (0-indexed, exclusive).
+3. Call \`edit_scene\` with those coordinates and the replacement text.
+4. Report what was changed.
 
-## Writing new content
-When the author asks to write a scene, dialogue, or passage:
-1. Use search_semantic to get context
-2. Write the content following formatting rules
-3. Use write_scene tool to append it directly to the chapter file
-4. Show the written text to the author in your response
+Do NOT use \`read_scene\` as a substitute for \`read_chapter\` before editing \u2014 \`read_scene\` line numbers are scene-relative, \`read_chapter\` line numbers are file-relative and match \`edit_scene\` input.
 
-## Dialogue formatting rules \u2014 ALWAYS follow these
-Dialogue MUST use this exact format:
+## Writing new content workflow
+1. Call \`search_semantic\` to retrieve relevant scenes for context.
+2. Write the new content following the dialogue and formatting rules below.
+3. Call \`write_scene\` to append it to the correct chapter file.
+4. Show the written text to the author.
+
+## Dialogue formatting \u2014 always use this exact format
+Every line of dialogue MUST follow this pattern:
 \`\`\`
-[character: \u0406\u043C'\u044F] \u2014 \u0422\u0435\u043A\u0441\u0442 \u0434\u0456\u0430\u043B\u043E\u0433\u0443.
+[character: Name] \u2014 Dialogue text.
 \`\`\`
-Examples:
+Example:
 \`\`\`
-[character: \u0420\u0435\u0439] \u2014 \u0414\u0435 \u043C\u0438 \u0437\u043D\u0430\u0445\u043E\u0434\u0438\u043C\u043E\u0441\u044C?
-[character: \u0424\u0440\u0435\u0439\u044F] \u2014 \u041D\u0435 \u0437\u043D\u0430\u044E. \u0410\u043B\u0435 \u0446\u0435 \u043D\u0435 \u0413\u0430\u043D\u0456\u043C\u0435\u0434.
+[character: Rey] \u2014 Where are we?
+[character: Freya] \u2014 I don't know. But this isn't Ganymede.
 \`\`\`
 Rules:
-- Square brackets around \`character: Name\`
-- Em dash \`\u2014\` (not hyphen \`-\`) after the closing bracket
+- \`character:\` is lowercase and always inside square brackets
+- Use an em dash \`\u2014\` (U+2014), never a hyphen \`-\`
 - One space before and after the em dash
-- Each dialogue line on its own line
-- Narrative text between dialogue lines has no special formatting
+- Each dialogue line is on its own line
+- Narrative prose between dialogue lines has no special formatting
 
 ## Editing rules
-- Preserve the author's voice and style completely
-- Only change what was asked \u2014 don't rewrite surrounding text
-- After writing or editing, show the result and briefly confirm what was done
+- Preserve the author's voice and style exactly \u2014 do not paraphrase or improve what wasn't asked
+- Only change what was explicitly requested
+- After any edit or write, show the affected text and confirm what was done in one sentence
+
+## General rules
+- Respond in the same language the author is writing in
+- NEVER fabricate story content \u2014 always use tools to retrieve facts from the book first
+- If \`search_semantic\` returns no results, tell the author the content has not been indexed yet and suggest running Import
+- Do NOT ask for permission before calling tools \u2014 call them immediately
+- If the message includes \`[Active file: path/to/file.md]\`, use that filename in tool calls without asking
 
 ## Story bible
-The CLAUDE.md file in the book directory contains the full story bible \u2014 characters, world, lore, rules.
-You MUST follow everything in CLAUDE.md when writing or editing.`;
+If a CLAUDE.md file is appended below, it contains the canonical story bible: characters, world rules, lore, and style guide.
+Rules from CLAUDE.md override your defaults. Always check CLAUDE.md before inventing character names, locations, or world details.`;
   let parts = [BASE_PROMPT];
   try {
     const normalizeLocal = (p) => p.replace(/^\/+/, "");
@@ -20517,9 +20546,14 @@ var GeminiAgent = class {
       let toolUses = [];
       let fullText = "";
       for await (const chunk of streamResult.stream) {
-        if (chunk.text()) {
-          fullText += chunk.text();
-          yield { type: "text_delta", data: { text: chunk.text() } };
+        let chunkText = "";
+        try {
+          chunkText = chunk.text();
+        } catch {
+        }
+        if (chunkText) {
+          fullText += chunkText;
+          yield { type: "text_delta", data: { text: chunkText } };
         }
         const calls = chunk.functionCalls();
         if (calls) {
@@ -45005,7 +45039,28 @@ var NarrativePlugin = class extends import_obsidian13.Plugin {
         const absDir = this.getAbsoluteBookDir();
         if (absDir) {
           console.log(`[Narrative Forge] Book changed to ${result.bookRoot || "vault root"}, re-indexing...`);
-          vectorDb.loadFromFile(this.app, result.bookRoot, this.settings.embeddingModel).then(() => importBookLocally(this.app, absDir, false, this.settings.embeddingModel)).then(() => console.log("[Narrative Forge] Book switch reindex done.")).catch((e) => console.error("[Narrative Forge] Book switch reindex failed:", e));
+          (async () => {
+            try {
+              await vectorDb.loadFromFile(this.app, result.bookRoot, this.settings.embeddingModel);
+              const pluginData = await this.loadData() || {};
+              const bookCache = pluginData.fileHashes?.[absDir] ?? {};
+              const { updated_cache } = await importBookLocally(
+                this.app,
+                absDir,
+                false,
+                this.settings.embeddingModel,
+                bookCache
+              );
+              const currentData = await this.loadData() || {};
+              await this.saveData({
+                ...currentData,
+                fileHashes: { ...currentData.fileHashes || {}, [absDir]: updated_cache }
+              });
+              console.log("[Narrative Forge] Book switch reindex done.");
+            } catch (e) {
+              console.error("[Narrative Forge] Book switch reindex failed:", e);
+            }
+          })();
         }
       }
     } else {

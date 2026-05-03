@@ -76,8 +76,9 @@ def parse_chapter(path: Path) -> Chapter | None:
         if len(parts) >= 3:
             try:
                 fm = yaml.safe_load(parts[1]) or {}
-            except yaml.YAMLError:
-                fm = {}
+            except yaml.YAMLError as e:
+                fm = {"status": "yaml_error"}
+                print(f"Warning: Failed to parse YAML frontmatter in {path}: {e}")
             body = parts[2].lstrip("\n")
 
     chapter = Chapter(
