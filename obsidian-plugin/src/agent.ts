@@ -372,7 +372,7 @@ export class OpenAIAgent implements BaseAgent {
   private openai: OpenAI;
 
   constructor(apiKey: string, private modelName: string, private localTools: LocalToolExecutor, private api: NarrativeAPI, private app: any, baseURL?: string) {
-    this.openai = new OpenAI({ apiKey: apiKey || "ollama", dangerouslyAllowBrowser: true, baseURL });
+    this.openai = new OpenAI({ apiKey: apiKey || "ollama", dangerouslyAllowBrowser: true, baseURL, fetch: globalThis.fetch.bind(globalThis) });
   }
 
   async *chatStream(messages: Anthropic.MessageParam[], bookDir: string): AsyncGenerator<ChatEvent> {

@@ -20392,7 +20392,7 @@ var OpenAIAgent = class {
     this.localTools = localTools;
     this.api = api;
     this.app = app;
-    this.openai = new OpenAI({ apiKey: apiKey || "ollama", dangerouslyAllowBrowser: true, baseURL });
+    this.openai = new OpenAI({ apiKey: apiKey || "ollama", dangerouslyAllowBrowser: true, baseURL, fetch: globalThis.fetch.bind(globalThis) });
   }
   openai;
   async *chatStream(messages, bookDir) {
