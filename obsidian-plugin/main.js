@@ -43990,14 +43990,14 @@ var NarrativeSettingTab = class extends import_obsidian7.PluginSettingTab {
     new import_obsidian7.Setting(containerEl).setName("Provider").setDesc("Which LLM to use for AI features.").addDropdown(
       (drop) => drop.addOption("cli", "Claude CLI (uses local Claude subscription)").addOption("anthropic", "Anthropic API (Claude)").addOption("openai", "OpenAI API (ChatGPT)").addOption("gemini", "Google Gemini API").addOption("local", "Local LLM (Ollama, LM Studio)").setValue(this.plugin.settings.provider === "api" ? "anthropic" : this.plugin.settings.provider).onChange(async (value) => {
         this.plugin.settings.provider = value;
-        if (value === "anthropic" && !this.plugin.settings.modelName) {
-          this.plugin.settings.modelName = "claude-3-5-sonnet-20241022";
-        } else if (value === "openai" && !this.plugin.settings.modelName) {
-          this.plugin.settings.modelName = "gpt-4o";
-        } else if (value === "gemini" && !this.plugin.settings.modelName) {
-          this.plugin.settings.modelName = "gemini-1.5-pro-latest";
-        } else if (value === "local" && !this.plugin.settings.modelName) {
-          this.plugin.settings.modelName = "llama3.1";
+        const defaults2 = {
+          anthropic: "claude-sonnet-4-6",
+          openai: "gpt-4o",
+          gemini: "gemini-3-flash-preview",
+          local: ""
+        };
+        if (value in defaults2) {
+          this.plugin.settings.modelName = defaults2[value];
         }
         await this.plugin.saveSettings();
         this.display();

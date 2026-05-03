@@ -182,14 +182,14 @@ export class NarrativeSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.provider = value;
             
-            if (value === "anthropic" && !this.plugin.settings.modelName) {
-              this.plugin.settings.modelName = "claude-3-5-sonnet-20241022";
-            } else if (value === "openai" && !this.plugin.settings.modelName) {
-              this.plugin.settings.modelName = "gpt-4o";
-            } else if (value === "gemini" && !this.plugin.settings.modelName) {
-              this.plugin.settings.modelName = "gemini-1.5-pro-latest";
-            } else if (value === "local" && !this.plugin.settings.modelName) {
-              this.plugin.settings.modelName = "llama3.1";
+            const defaults: Record<string, string> = {
+              anthropic: "claude-sonnet-4-6",
+              openai: "gpt-4o",
+              gemini: "gemini-3-flash-preview",
+              local: "",
+            };
+            if (value in defaults) {
+              this.plugin.settings.modelName = defaults[value];
             }
             
             await this.plugin.saveSettings();
