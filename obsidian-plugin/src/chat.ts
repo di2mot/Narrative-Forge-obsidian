@@ -236,6 +236,8 @@ export class NarrativeChatView extends ItemView {
            throw new Error(`API key is required for provider '${provider}'. Please set it in Narrative Forge settings.`);
         }
         console.log(`[NOS chat] using local TS agent (${provider}: ${modelName}), bookDir=`, bookDir);
+        const lastUserPreview = String(apiMessages[apiMessages.length - 1]?.content ?? "").slice(0, 200);
+        console.log(`[NOS chat] apiHistory before send: ${this.apiHistory.length} msgs; lastUser="${lastUserPreview.replace(/\n/g, " ⏎ ")}…"`);
 
         const localTools = new LocalToolExecutor(this.plugin.app, bookDir || "");
         const agent = createAgent(
