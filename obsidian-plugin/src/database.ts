@@ -1,15 +1,16 @@
 import { create, insert, remove, search, Orama } from "@orama/orama";
 import { persist, restore } from "@orama/plugin-data-persistence";
 import { pipeline, env } from "@huggingface/transformers";
+import * as ort from "onnxruntime-web";
+
+// Configure ONNX runtime before pipeline() runs.
+// onnxruntime-web@1.14.0 has non-threaded WASM fallback; CDN 1.14.0 has the files.
+// Both this import and transformers.web.min.js resolve to the same ort instance.
+ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/";
+ort.env.wasm.numThreads = 1;
 
 env.allowLocalModels = false;
 env.useBrowserCache = true;
-// Electron doesn't have SharedArrayBuffer (no COOP/COEP headers) — disable threading.
-// env.backends.onnx.wasm may not exist yet; initialise it defensively.
-if (!env.backends.onnx.wasm) (env.backends.onnx as any).wasm = {};
-env.backends.onnx.wasm.proxy = false;
-env.backends.onnx.wasm.numThreads = 1;
-env.backends.onnx.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/";
 
 export const EN_MODEL = "Xenova/all-MiniLM-L6-v2";
 export const MULTILINGUAL_MODEL = "Xenova/paraphrase-multilingual-MiniLM-L12-v2";
