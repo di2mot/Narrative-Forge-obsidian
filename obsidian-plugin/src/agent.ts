@@ -504,14 +504,17 @@ export class OpenAIAgent implements BaseAgent {
   async *chatStream(messages: Anthropic.MessageParam[], bookDir: string): AsyncGenerator<ChatEvent> {
     const systemPrompt = await buildSystemPrompt(this.app, bookDir);
     let turn = 0;
-    
+
     // We maintain state in Anthropic format for UI consistency, but map to OpenAI format for requests
     let currentMessages = [...messages];
+
+    let totalTextEmitted = 0;
+    let totalToolCalls = 0;
 
     while (turn < 5) {
       turn++;
       const oaiMessages = mapAnthropicToOpenAIMessages(currentMessages, systemPrompt);
-      
+
       const stream = await this.openai.chat.completions.create({
         model: this.modelName || "gpt-4o",
         messages: oaiMessages,
@@ -546,6 +549,7 @@ export class OpenAIAgent implements BaseAgent {
 
       if (textContent) {
         (assistantMessage.content as any[]).push({ type: "text", text: textContent });
+        totalTextEmitted += textContent.length;
       }
 
       const toolUsesList = Object.values(toolUsesMap);
@@ -554,13 +558,55 @@ export class OpenAIAgent implements BaseAgent {
         (assistantMessage.content as any[]).push(tu);
         yield { type: "tool_use", data: { name: tu.name, input: tu.input } };
       }
+      totalToolCalls += toolUsesList.length;
 
+      console.log(`[NOS OpenAIAgent] turn ${turn}: text=${textContent.length}ch, toolCalls=${toolUsesList.length}`);
       currentMessages.push(assistantMessage);
 
       if (toolUsesList.length === 0) break;
 
       const toolResultsContent = await executeTools(toolUsesList, this.localTools, this.api, bookDir);
       currentMessages.push({ role: "user", content: toolResultsContent });
+    }
+
+    // Fallback: small open models (Gemma, Llama 3.2 etc.) sometimes stop emitting
+    // anything after a few tool calls — no further tool_calls AND no text. The
+    // user sees an empty assistant bubble. Detect that and do one final tool-less
+    // call to force a text answer based on whatever tool results we already have.
+    if (totalTextEmitted === 0 && totalToolCalls > 0) {
+      console.log("[NOS OpenAIAgent] no text emitted after tool calls — running tool-less final pass");
+      const oaiMessages = mapAnthropicToOpenAIMessages(currentMessages, systemPrompt);
+      oaiMessages.push({
+        role: "user",
+        content:
+          "Based on the tool results above, answer the user's original question now. " +
+          "Reply directly in the user's language. Do not call any more tools."
+      });
+
+      try {
+        const finalStream = await this.openai.chat.completions.create({
+          model: this.modelName || "gpt-4o",
+          messages: oaiMessages,
+          stream: true,
+        });
+        let finalText = "";
+        for await (const chunk of finalStream) {
+          const delta = chunk.choices[0]?.delta;
+          if (delta?.content) {
+            finalText += delta.content;
+            yield { type: "text_delta", data: { text: delta.content } };
+          }
+        }
+        if (finalText) {
+          currentMessages.push({ role: "assistant", content: [{ type: "text", text: finalText }] as any });
+        } else {
+          const fallback = "I could not generate a response from the tool results. Try asking again, or switch to a stronger model in Settings → LLM Provider.";
+          yield { type: "text_delta", data: { text: fallback } };
+          currentMessages.push({ role: "assistant", content: [{ type: "text", text: fallback }] as any });
+        }
+      } catch (e) {
+        console.error("[NOS OpenAIAgent] final pass failed:", e);
+      }
     }
 
     yield { type: "done", data: { messages: currentMessages } };

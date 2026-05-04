@@ -20487,6 +20487,8 @@ var OpenAIAgent = class {
     const systemPrompt = await buildSystemPrompt(this.app, bookDir);
     let turn = 0;
     let currentMessages = [...messages];
+    let totalTextEmitted = 0;
+    let totalToolCalls = 0;
     while (turn < 5) {
       turn++;
       const oaiMessages = mapAnthropicToOpenAIMessages(currentMessages, systemPrompt);
@@ -20522,6 +20524,7 @@ var OpenAIAgent = class {
       }
       if (textContent) {
         assistantMessage.content.push({ type: "text", text: textContent });
+        totalTextEmitted += textContent.length;
       }
       const toolUsesList = Object.values(toolUsesMap);
       for (const tu2 of toolUsesList) {
@@ -20529,11 +20532,45 @@ var OpenAIAgent = class {
         assistantMessage.content.push(tu2);
         yield { type: "tool_use", data: { name: tu2.name, input: tu2.input } };
       }
+      totalToolCalls += toolUsesList.length;
+      console.log(`[NOS OpenAIAgent] turn ${turn}: text=${textContent.length}ch, toolCalls=${toolUsesList.length}`);
       currentMessages.push(assistantMessage);
       if (toolUsesList.length === 0)
         break;
       const toolResultsContent = await executeTools(toolUsesList, this.localTools, this.api, bookDir);
       currentMessages.push({ role: "user", content: toolResultsContent });
+    }
+    if (totalTextEmitted === 0 && totalToolCalls > 0) {
+      console.log("[NOS OpenAIAgent] no text emitted after tool calls \u2014 running tool-less final pass");
+      const oaiMessages = mapAnthropicToOpenAIMessages(currentMessages, systemPrompt);
+      oaiMessages.push({
+        role: "user",
+        content: "Based on the tool results above, answer the user's original question now. Reply directly in the user's language. Do not call any more tools."
+      });
+      try {
+        const finalStream = await this.openai.chat.completions.create({
+          model: this.modelName || "gpt-4o",
+          messages: oaiMessages,
+          stream: true
+        });
+        let finalText = "";
+        for await (const chunk of finalStream) {
+          const delta = chunk.choices[0]?.delta;
+          if (delta?.content) {
+            finalText += delta.content;
+            yield { type: "text_delta", data: { text: delta.content } };
+          }
+        }
+        if (finalText) {
+          currentMessages.push({ role: "assistant", content: [{ type: "text", text: finalText }] });
+        } else {
+          const fallback = "I could not generate a response from the tool results. Try asking again, or switch to a stronger model in Settings \u2192 LLM Provider.";
+          yield { type: "text_delta", data: { text: fallback } };
+          currentMessages.push({ role: "assistant", content: [{ type: "text", text: fallback }] });
+        }
+      } catch (e2) {
+        console.error("[NOS OpenAIAgent] final pass failed:", e2);
+      }
     }
     yield { type: "done", data: { messages: currentMessages } };
   }
