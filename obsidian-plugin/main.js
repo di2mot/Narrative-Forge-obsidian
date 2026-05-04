@@ -20070,13 +20070,16 @@ function makeNodeFetch() {
           headers["content-length"] = String(bodyBuf.length);
         }
       }
+      const isLoopback = urlObj.hostname === "localhost" || urlObj.hostname === "127.0.0.1" || urlObj.hostname === "::1" || urlObj.hostname === "[::1]";
       const reqOpts = {
-        hostname: urlObj.hostname,
+        hostname: urlObj.hostname === "localhost" ? "127.0.0.1" : urlObj.hostname,
         port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
         path: urlObj.pathname + urlObj.search,
         method: (init?.method || "GET").toUpperCase(),
         headers
       };
+      if (isLoopback)
+        reqOpts.family = 4;
       console.log("[NOS nodeFetch]", reqOpts.method, urlStr, "body bytes:", bodyBuf?.length ?? 0);
       const req = lib.request(reqOpts, (res) => {
         const resHeaders = new Headers();

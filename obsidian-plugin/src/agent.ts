@@ -47,13 +47,23 @@ function makeNodeFetch(): typeof fetch {
         }
       }
 
-      const reqOpts = {
-        hostname: urlObj.hostname,
+      // Node 17+ resolves "localhost" to ::1 (IPv6) first on macOS, but most
+      // local LLM servers (LM Studio, Ollama) bind only to 127.0.0.1 (IPv4),
+      // causing ECONNREFUSED ::1:<port>. Force IPv4 for loopback hostnames.
+      const isLoopback =
+        urlObj.hostname === "localhost" ||
+        urlObj.hostname === "127.0.0.1" ||
+        urlObj.hostname === "::1" ||
+        urlObj.hostname === "[::1]";
+
+      const reqOpts: Record<string, unknown> = {
+        hostname: urlObj.hostname === "localhost" ? "127.0.0.1" : urlObj.hostname,
         port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
         path: urlObj.pathname + urlObj.search,
         method: (init?.method || "GET").toUpperCase(),
         headers,
       };
+      if (isLoopback) reqOpts.family = 4;
       console.log("[NOS nodeFetch]", reqOpts.method, urlStr, "body bytes:", bodyBuf?.length ?? 0);
 
       const req = lib.request(reqOpts, (res: any) => {
