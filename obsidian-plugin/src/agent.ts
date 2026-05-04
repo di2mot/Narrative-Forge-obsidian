@@ -1,8 +1,11 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { normalizePath } from "obsidian";
 import type { ChatEvent, NarrativeAPI } from "./api";
 import { LocalToolExecutor } from "./tools";
+
+let _toolCallSeq = 0;
 
 // ---------------------------------------------------------------------------
 // Node fetch — bypasses CORS (app://obsidian.md origin is blocked by local LLM servers)
@@ -22,37 +25,92 @@ function makeNodeFetch(): typeof fetch {
         new Headers(init.headers as HeadersInit).forEach((v, k) => { headers[k] = v; });
       }
 
-      const req = lib.request(
-        {
-          hostname: urlObj.hostname,
-          port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
-          path: urlObj.pathname + urlObj.search,
-          method: init?.method || "GET",
-          headers,
-        },
-        (res: any) => {
-          const resHeaders = new Headers();
-          for (const [k, v] of Object.entries(res.headers as Record<string, string | string[]>)) {
-            resHeaders.set(k, Array.isArray(v) ? v.join(", ") : v);
-          }
-          const stream = new ReadableStream({
-            start(controller) {
-              res.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
-              res.on("end", () => controller.close());
-              res.on("error", (e: Error) => controller.error(e));
-            },
-          });
-          resolve(new Response(stream, { status: res.statusCode, headers: resHeaders }));
+      // The OpenAI SDK sends body as a JSON string for chat completions. Setting
+      // Content-Length explicitly avoids chunked transfer encoding which some
+      // local LLM servers (notably LM Studio) reject silently.
+      let bodyBuf: Buffer | undefined;
+      if (init?.body !== undefined && init?.body !== null) {
+        if (typeof init.body === "string") {
+          bodyBuf = Buffer.from(init.body, "utf-8");
+        } else if (init.body instanceof ArrayBuffer) {
+          bodyBuf = Buffer.from(init.body);
+        } else if (ArrayBuffer.isView(init.body)) {
+          const view = init.body as ArrayBufferView;
+          bodyBuf = Buffer.from(view.buffer, view.byteOffset, view.byteLength);
+        } else {
+          // Fallback: stringify whatever else (FormData/Blob/stream not supported here)
+          try { bodyBuf = Buffer.from(JSON.stringify(init.body), "utf-8"); }
+          catch { bodyBuf = undefined; }
         }
-      );
-      req.on("error", reject);
-      if (init?.body) req.write(init.body);
+        if (bodyBuf && !Object.keys(headers).some(k => k.toLowerCase() === "content-length")) {
+          headers["content-length"] = String(bodyBuf.length);
+        }
+      }
+
+      const reqOpts = {
+        hostname: urlObj.hostname,
+        port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
+        path: urlObj.pathname + urlObj.search,
+        method: (init?.method || "GET").toUpperCase(),
+        headers,
+      };
+      console.log("[NOS nodeFetch]", reqOpts.method, urlStr, "body bytes:", bodyBuf?.length ?? 0);
+
+      const req = lib.request(reqOpts, (res: any) => {
+        const resHeaders = new Headers();
+        for (const [k, v] of Object.entries(res.headers as Record<string, string | string[]>)) {
+          resHeaders.set(k, Array.isArray(v) ? v.join(", ") : v);
+        }
+        const stream = new ReadableStream({
+          start(controller) {
+            res.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
+            res.on("end", () => controller.close());
+            res.on("error", (e: Error) => controller.error(e));
+          },
+        });
+        resolve(new Response(stream, { status: res.statusCode, headers: resHeaders }));
+      });
+      req.on("error", (e: Error & { code?: string }) => {
+        console.error("[NOS nodeFetch] request error:", e.code, e.message, e);
+        reject(e);
+      });
+
+      // Forward AbortSignal to the underlying request so the SDK's abort/timeout works.
+      const sig = (init as any)?.signal as AbortSignal | undefined;
+      if (sig) {
+        if (sig.aborted) { req.destroy(new Error("AbortError")); return; }
+        sig.addEventListener("abort", () => req.destroy(new Error("AbortError")), { once: true });
+      }
+
+      if (bodyBuf) req.write(bodyBuf);
       req.end();
     });
   } as typeof fetch;
 }
 
 const NODE_FETCH = makeNodeFetch();
+
+/**
+ * Ping an OpenAI-compatible endpoint (Ollama, LM Studio, etc) to check reachability.
+ * Hits GET <baseURL>/models with a short timeout. Returns null on success, error message otherwise.
+ */
+export async function pingLocalLLM(baseURL: string, timeoutMs = 2500): Promise<string | null> {
+  if (!baseURL) return "Local Base URL is not set.";
+  const url = baseURL.replace(/\/+$/, "") + "/models";
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await NODE_FETCH(url, { method: "GET", signal: ctrl.signal });
+    if (!res.ok) return `HTTP ${res.status}`;
+    return null;
+  } catch (e: any) {
+    if (e?.code === "ECONNREFUSED") return `Connection refused at ${baseURL}`;
+    if (e?.message === "AbortError" || e?.name === "AbortError") return `Timeout after ${timeoutMs}ms`;
+    return e?.message || String(e);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Base Definitions
@@ -226,9 +284,8 @@ Rules from CLAUDE.md override your defaults. Always check CLAUDE.md before inven
   let parts = [BASE_PROMPT];
 
   try {
-    const normalizeLocal = (p: string) => p.replace(/^\/+/, "");
-    const claudeMdPath = normalizeLocal(`${bookDir}/CLAUDE.md`);
-    const claudeMdParentPath = normalizeLocal(`${bookDir}/../CLAUDE.md`);
+    const claudeMdPath = normalizePath(`${bookDir}/CLAUDE.md`);
+    const claudeMdParentPath = normalizePath(`${bookDir}/../CLAUDE.md`);
     const getFileText = async (p: string) => {
       const f = app.vault.getAbstractFileByPath(p);
       if (f) return await app.vault.read(f);
@@ -337,9 +394,18 @@ export class AnthropicAgent implements BaseAgent {
           }
         } else if (chunk.type === "content_block_stop") {
           if (currentToolCall) {
-            currentToolCall.input = JSON.parse(currentToolCall.input || "{}");
-            toolUses.push({ id: currentToolCall.id, name: currentToolCall.name, input: currentToolCall.input });
-            yield { type: "tool_use", data: { name: currentToolCall.name, input: currentToolCall.input } };
+            try {
+              currentToolCall.input = JSON.parse(currentToolCall.input || "{}");
+              toolUses.push({ id: currentToolCall.id, name: currentToolCall.name, input: currentToolCall.input });
+              yield { type: "tool_use", data: { name: currentToolCall.name, input: currentToolCall.input } };
+            } catch {
+              // Malformed streaming JSON — remove the partially-built entry from history
+              // so it never poisons future turns sent to the API.
+              const arr = assistantMessage.content as any[];
+              const idx = arr.indexOf(currentToolCall);
+              if (idx !== -1) arr.splice(idx, 1);
+              console.warn("[Narrative Forge] Dropped malformed tool_use from history:", currentToolCall.name);
+            }
             currentToolCall = null;
           }
         }
@@ -422,7 +488,7 @@ export class OpenAIAgent implements BaseAgent {
   private openai: OpenAI;
 
   constructor(apiKey: string, private modelName: string, private localTools: LocalToolExecutor, private api: NarrativeAPI, private app: any, baseURL?: string) {
-    this.openai = new OpenAI({ apiKey: apiKey || "ollama", dangerouslyAllowBrowser: true, baseURL, fetch: NODE_FETCH });
+    this.openai = new OpenAI({ apiKey: apiKey || "ollama", dangerouslyAllowBrowser: true, baseURL, fetch: NODE_FETCH, maxRetries: 0 });
   }
 
   async *chatStream(messages: Anthropic.MessageParam[], bookDir: string): AsyncGenerator<ChatEvent> {
@@ -461,11 +527,9 @@ export class OpenAIAgent implements BaseAgent {
             const idx = tc.index;
             if (!toolUsesMap[idx]) {
               toolUsesMap[idx] = { type: "tool_use", id: tc.id || `call_${Math.random().toString(36).substring(2)}`, name: tc.function?.name || "", input: "" };
-              yield { type: "tool_use", data: { name: toolUsesMap[idx].name } };
             }
-            if (tc.function?.arguments) {
-              toolUsesMap[idx].input += tc.function.arguments;
-            }
+            if (tc.function?.name) toolUsesMap[idx].name = tc.function.name;
+            if (tc.function?.arguments) toolUsesMap[idx].input += tc.function.arguments;
           }
         }
       }
@@ -498,26 +562,34 @@ export class OpenAIAgent implements BaseAgent {
 // ---------------------------------------------------------------------------
 
 function mapAnthropicToGeminiMessages(messages: Anthropic.MessageParam[]): any[] {
+  // Build id→name map from all assistant tool_use entries so tool results
+  // can look up the exact function name without reconstructing it from the id.
+  const toolNameById = new Map<string, string>();
+  for (const m of messages) {
+    if (m.role === "assistant" && Array.isArray(m.content)) {
+      for (const c of m.content as any[]) {
+        if (c.type === "tool_use") toolNameById.set(c.id, c.name);
+      }
+    }
+  }
+
   const geminiMsgs: any[] = [];
-  
+
   for (const m of messages) {
     if (m.role === "user") {
       if (typeof m.content === "string") {
         geminiMsgs.push({ role: "user", parts: [{ text: m.content }] });
       } else {
-        const parts: any[] = [];
         const texts = m.content.filter((c: any) => c.type === "text");
         const toolResults = m.content.filter((c: any) => c.type === "tool_result");
-        
+
         if (texts.length > 0) {
           geminiMsgs.push({ role: "user", parts: [{ text: texts.map((t: any) => t.text).join("\n") }] });
         }
-        
+
         if (toolResults.length > 0) {
           const funcParts = toolResults.map((tr: any) => {
-            const fnName = tr.tool_use_id.startsWith("gf:") 
-              ? tr.tool_use_id.split(":")[1] 
-              : tr.tool_use_id.replace(/^call_/, "").replace(/_\d+.*$/, "");
+            const fnName = toolNameById.get(tr.tool_use_id) ?? tr.tool_use_id;
             return {
               functionResponse: {
                 name: fnName,
@@ -617,7 +689,7 @@ export class GeminiAgent implements BaseAgent {
           for (const call of calls) {
             const tu = {
               type: "tool_use",
-              id: `gf:${call.name}:${Date.now()}`,
+              id: `gf:${call.name}:${++_toolCallSeq}`,
               name: call.name,
               input: call.args
             };

@@ -238,9 +238,15 @@ export class NarrativeChatView extends ItemView {
           }
           this.handleChatEvent(event, assistantEl, (text) => {
             fullText += text;
-            this.updateAssistantMessage(assistantEl, fullText);
+            // Use plain textContent during streaming to avoid O(n²) markdown re-renders.
+            // Final markdown render happens after the loop ends.
+            const content = assistantEl.querySelector(".narrative-msg-content") as HTMLElement | null;
+            if (content) content.textContent = fullText;
+            this.scrollToBottom();
           }, toolUses);
         }
+        // Render full markdown once streaming is complete
+        this.updateAssistantMessage(assistantEl, fullText);
       }
 
       this.messages.push({
@@ -248,6 +254,13 @@ export class NarrativeChatView extends ItemView {
         content: fullText,
         toolUses: toolUses.length > 0 ? toolUses : undefined,
       });
+
+      // Trim apiHistory to 40 messages (20 turns) to stay within model context limits.
+      const MAX_HISTORY = 40;
+      if (this.apiHistory.length > MAX_HISTORY) {
+        this.apiHistory = this.apiHistory.slice(this.apiHistory.length - MAX_HISTORY);
+        new Notice("Narrative Forge: Conversation trimmed to last 20 turns to fit context window.");
+      }
 
       if (toolUses.length > 0) {
         this.appendToolSummary(assistantEl, toolUses);
@@ -260,7 +273,19 @@ export class NarrativeChatView extends ItemView {
       } else if (this.plugin.settings.provider === "local") {
         errorMessage += `\n\nIs your local LLM server running at ${this.plugin.settings.localBaseUrl}?`;
       }
-      
+
+      // If the failure is a connection refusal, list providers that have keys
+      // configured as a quick fallback hint (decoupled — no auto-switching).
+      if (/ECONNREFUSED|fetch failed|connect ECONNREFUSED/i.test(errMsg)) {
+        const alternatives: string[] = [];
+        if (this.plugin.settings.apiKey) alternatives.push("Anthropic");
+        if (this.plugin.settings.openaiApiKey) alternatives.push("OpenAI");
+        if (this.plugin.settings.geminiApiKey) alternatives.push("Gemini");
+        if (alternatives.length > 0) {
+          errorMessage += `\n\nAlternative providers with keys configured: ${alternatives.join(", ")}. Switch in Settings → LLM Provider.`;
+        }
+      }
+
       this.updateAssistantMessage(assistantEl, errorMessage);
       new Notice(`Chat error: ${errMsg}`);
     } finally {

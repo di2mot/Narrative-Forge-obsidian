@@ -136,8 +136,10 @@ export class LocalToolExecutor {
     const content = await this.app.vault.read(file);
     const MAX_CHARS = 8000;
     if (content.length > MAX_CHARS) {
-      return addLineNumbers(content.slice(0, MAX_CHARS)) +
-        `\n\n[NOTE: Content truncated at ${MAX_CHARS} chars. Use read_scene with scene_index for specific scenes.]`;
+      const cutoff = content.lastIndexOf("\n", MAX_CHARS);
+      const truncated = content.slice(0, cutoff > 0 ? cutoff : MAX_CHARS);
+      return addLineNumbers(truncated) +
+        `\n\n[NOTE: Content truncated at line boundary (~${MAX_CHARS} chars). Use read_scene with scene_index for specific scenes.]`;
     }
     return addLineNumbers(content);
   }

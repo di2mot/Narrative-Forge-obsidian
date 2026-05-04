@@ -13,6 +13,8 @@ build/
 
 # Obsidian plugin
 obsidian-plugin/node_modules/
+# Copied from node_modules at build time (~21 MB onnxruntime-web WASM binary)
+obsidian-plugin/ort-wasm-simd-threaded.jsep.wasm
 
 # Environment
 .env

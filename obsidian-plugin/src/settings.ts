@@ -4,6 +4,7 @@
 
 import { App, PluginSettingTab, Setting, Notice } from "obsidian";
 import type NarrativePlugin from "./main";
+import { pingLocalLLM } from "./agent";
 
 export interface NarrativeSettings {
   backendMode: "external" | "managed";
@@ -212,7 +213,7 @@ export class NarrativeSettingTab extends PluginSettingTab {
         );
     }
 
-    if (this.plugin.settings.provider === "anthropic" || this.plugin.settings.provider === "api") {
+    if (this.plugin.settings.provider === "anthropic") {
       new Setting(containerEl)
         .setName("Anthropic API key")
         .setDesc("Your Anthropic API key (sk-ant-...).")
@@ -260,17 +261,34 @@ export class NarrativeSettingTab extends PluginSettingTab {
     } else if (this.plugin.settings.provider === "local") {
       new Setting(containerEl)
         .setName("Local Base URL")
-        .setDesc("OpenAI-compatible endpoint (Ollama: http://localhost:11434/v1, LM Studio: http://localhost:1234/v1).")
+        .setDesc("OpenAI-compatible endpoint. Ollama: http://localhost:11434/v1 — LM Studio: http://localhost:1234/v1")
         .addText((text) => {
           text
-            .setPlaceholder("http://localhost:11434/v1")
+            .setPlaceholder("http://localhost:11434/v1 or http://localhost:1234/v1")
             .setValue(this.plugin.settings.localBaseUrl)
             .onChange(async (value) => {
               this.plugin.settings.localBaseUrl = value.trim();
               await this.plugin.saveSettings();
             });
           return text;
-        });
+        })
+        .addButton((btn) =>
+          btn
+            .setButtonText("Test")
+            .onClick(async () => {
+              btn.setButtonText("Testing...");
+              btn.setDisabled(true);
+              const err = await pingLocalLLM(this.plugin.settings.localBaseUrl);
+              if (err) {
+                new Notice(`Local LLM unreachable: ${err}`);
+                btn.setButtonText("Failed");
+              } else {
+                new Notice("Local LLM reachable.");
+                btn.setButtonText("OK");
+              }
+              setTimeout(() => { btn.setButtonText("Test"); btn.setDisabled(false); }, 3000);
+            })
+        );
     }
 
     // ---------------------------------------------------------------------------
@@ -340,7 +358,7 @@ export class NarrativeSettingTab extends PluginSettingTab {
     containerEl.createEl("h3", { text: "About" });
     const infoDiv = containerEl.createEl("div", { cls: "narrative-settings-info" });
     infoDiv.createEl("p", {
-      text: "Narrative Forge v0.4.0 — AI-powered writing assistant for fiction authors.",
+      text: "Narrative Forge v0.5.0 — AI-powered writing assistant for fiction authors.",
     });
     infoDiv.createEl("p", {
       text: "Start the backend with: uvicorn narrative_os.server:app --reload",

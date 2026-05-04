@@ -86,6 +86,12 @@ export async function importBookLocally(
     await vectorDb.init(modelName);
   }
 
+  // Short, filesystem-safe prefix derived from the book path so chunk IDs are
+  // unique across books (vectorDb is a singleton).
+  const bookPrefix = relBookDir
+    ? relBookDir.replace(/[^a-z0-9]/gi, "_").slice(-12)
+    : "root";
+
   const updatedCache: Record<string, FileHashEntry> = { ...hashCache };
 
   // Remove stale cache entries for deleted files
@@ -125,7 +131,7 @@ export async function importBookLocally(
       if (!scene.text.trim()) continue;
       const chunks = splitWords(scene.text, CHUNK_WORDS, CHUNK_OVERLAP);
       for (let ckIdx = 0; ckIdx < chunks.length; ckIdx++) {
-        const id = `ch${String(chapter.number).padStart(4, "0")}_sc${String(sceneIdx).padStart(4, "0")}_ck${String(ckIdx).padStart(4, "0")}`;
+        const id = `${bookPrefix}_ch${String(chapter.number).padStart(4, "0")}_sc${String(sceneIdx).padStart(4, "0")}_ck${String(ckIdx).padStart(4, "0")}`;
         await vectorDb.addSceneChunk(id, chunks[ckIdx], {
           chapter: chapter.number,
           chapter_title: chapter.title,

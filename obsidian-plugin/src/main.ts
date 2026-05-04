@@ -17,7 +17,7 @@ import { WritingSession } from "./session";
 import { LocalServer } from "./local_server";
 import { importBookLocally, FileHashEntry } from "./importer";
 import { vectorDb } from "./database";
-import { invalidatePromptCache } from "./agent";
+import { invalidatePromptCache, pingLocalLLM } from "./agent";
 
 // ---------------------------------------------------------------------------
 // "Create new book" modal
@@ -103,7 +103,8 @@ export default class NarrativePlugin extends Plugin {
   private writingSession!: WritingSession;
   private localServer!: LocalServer;
   private currentBookRoot: string | null = null;
-  private startupReindexDone = false;  // Bug 10: prevent race with onActiveFileChange
+  private startupReindexDone = false;
+  private reindexInProgress = false;
   lastActiveMdPath: string | null = null;  // last focused .md file path (vault-relative)
 
   getCurrentBookRoot(): string | null {
@@ -305,9 +306,26 @@ export default class NarrativePlugin extends Plugin {
 
     this.app.workspace.onLayoutReady(() => {
       void this.startupReindex();
+      void this.startupHealthCheck();
     });
 
     console.log("[Narrative Forge] Plugin loaded.");
+  }
+
+  /**
+   * Soft probe of the configured LLM endpoint (only when provider="local").
+   * Surfaces a Notice if unreachable so the user fixes config before sending a message.
+   */
+  private async startupHealthCheck(): Promise<void> {
+    if (this.settings.provider !== "local") return;
+    const err = await pingLocalLLM(this.settings.localBaseUrl);
+    if (err) {
+      new Notice(
+        `Narrative Forge: Local LLM unreachable at ${this.settings.localBaseUrl}. ${err}. ` +
+        `Check Settings → LLM Provider, or start your local server.`,
+        8000
+      );
+    }
   }
 
   async onunload(): Promise<void> {
@@ -349,10 +367,12 @@ export default class NarrativePlugin extends Plugin {
       void this.reloadCharacterCache();
       if (sidebar) void sidebar.refresh();
 
-      // Issue 2 fix: if the user switched to a different book, re-index its Orama DB
-      if (prevRoot !== result.bookRoot) {
+      // If the user switched to a different book, re-index its Orama DB.
+      // reindexInProgress prevents overlapping jobs when files are opened rapidly.
+      if (prevRoot !== result.bookRoot && !this.reindexInProgress) {
         const absDir = this.getAbsoluteBookDir();
         if (absDir) {
+          this.reindexInProgress = true;
           console.log(`[Narrative Forge] Book changed to ${result.bookRoot || 'vault root'}, re-indexing...`);
           (async () => {
             try {
@@ -370,6 +390,8 @@ export default class NarrativePlugin extends Plugin {
               console.log("[Narrative Forge] Book switch reindex done.");
             } catch (e) {
               console.error("[Narrative Forge] Book switch reindex failed:", e);
+            } finally {
+              this.reindexInProgress = false;
             }
           })();
         }
@@ -664,7 +686,11 @@ Change in \`.narrative-book.json\` if running on a different port.
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const data = (await this.loadData()) || {};
+    // Strip non-settings keys (fileHashes) so they never pollute this.settings
+    // and cannot be accidentally clobbered by saveSettings.
+    const { fileHashes: _fh, ...settingsData } = data as any;
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, settingsData);
     // Migration: clear modelName if it looks like a cloud model but provider is local
     if (this.settings.provider === "local") {
       const m = this.settings.modelName || "";
@@ -675,7 +701,10 @@ Change in \`.narrative-book.json\` if running on a different port.
   }
 
   async saveSettings(): Promise<void> {
-    await this.saveData(this.settings);
+    // Read current persisted data first so fileHashes (written by import jobs)
+    // are preserved even if they were updated after the last loadSettings call.
+    const current = (await this.loadData()) || {};
+    await this.saveData({ ...current, ...this.settings });
   }
 
   private registerAutoImport(): void {
@@ -821,20 +850,24 @@ Change in \`.narrative-book.json\` if running on a different port.
   }
 
   async runImport(force = false): Promise<void> {
-    const notice = new Notice("Narrative Forge: Importing locally...", 0);
     const absDir = this.getAbsoluteBookDir();
+    if (!absDir) {
+      new Notice("Narrative Forge: No active book.");
+      return;
+    }
+    const notice = new Notice("Narrative Forge: Importing locally...", 0);
     try {
       const pluginData = (await this.loadData()) || {};
       const bookCache: Record<string, FileHashEntry> = force
         ? {}
-        : (pluginData.fileHashes?.[absDir!] ?? {});
+        : (pluginData.fileHashes?.[absDir] ?? {});
       const result = await importBookLocally(
         this.app, absDir, force, this.settings.embeddingModel, bookCache
       );
       const currentData = (await this.loadData()) || {};
       await this.saveData({
         ...currentData,
-        fileHashes: { ...(currentData.fileHashes || {}), [absDir!]: result.updated_cache }
+        fileHashes: { ...(currentData.fileHashes || {}), [absDir]: result.updated_cache }
       });
       notice.hide();
       new Notice(`Narrative Forge: Imported ${result.chapters_imported} chapter(s) into local vector database.`);
