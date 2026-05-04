@@ -49,11 +49,43 @@ export class NarrativeChatView extends ItemView {
     return "message-circle";
   }
 
+  /**
+   * Find the most recently active MarkdownView. Falls back across leaves so
+   * we can still get the editor selection when the chat panel itself is the
+   * active leaf (in which case getActiveViewOfType returns null).
+   */
+  private findActiveMarkdownView(): MarkdownView | null {
+    const direct = this.plugin.app.workspace.getActiveViewOfType(MarkdownView);
+    if (direct) return direct;
+
+    const leaves = this.plugin.app.workspace.getLeavesOfType("markdown");
+    const lastPath = this.plugin.lastActiveMdPath;
+    if (lastPath) {
+      for (const leaf of leaves) {
+        const v = leaf.view as MarkdownView;
+        if (v?.file?.path === lastPath) return v;
+      }
+    }
+    return leaves.length > 0 ? (leaves[0].view as MarkdownView) : null;
+  }
+
+  /** Snapshot the current editor selection into capturedSelection (no-op if empty). */
+  private captureCurrentSelection(): void {
+    const view = this.findActiveMarkdownView();
+    const sel = view?.editor.getSelection() ?? "";
+    if (sel) this.capturedSelection = sel;
+  }
+
   async onOpen(): Promise<void> {
     const root = this.containerEl.children[1] as HTMLElement;
     root.empty();
     root.addClass("narrative-chat");
     this.mdComponent.load();
+
+    // Capture the editor selection BEFORE the click steals focus from the editor.
+    // mousedown on the panel fires before focus moves; this guarantees we see
+    // the selection even when the user clicks straight into the chat input.
+    root.addEventListener("mousedown", () => this.captureCurrentSelection(), true);
 
     // Header
     const header = root.createEl("div", { cls: "narrative-chat-header" });
@@ -131,8 +163,8 @@ export class NarrativeChatView extends ItemView {
       ? this.plugin.app.vault.adapter.getBasePath()
       : "";
 
-    // Prefer active MarkdownView; fall back to last focused .md file
-    const view = this.plugin.app.workspace.getActiveViewOfType(MarkdownView);
+    // Find the most recent markdown view — works even when the chat panel is the active leaf
+    const view = this.findActiveMarkdownView();
     const relativePath = view?.file?.path ?? this.plugin.lastActiveMdPath ?? "";
     const filePath = vaultPath && relativePath ? `${vaultPath}/${relativePath}` : relativePath;
 

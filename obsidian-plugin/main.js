@@ -48974,11 +48974,39 @@ var _NarrativeChatView = class extends import_obsidian7.ItemView {
   getIcon() {
     return "message-circle";
   }
+  /**
+   * Find the most recently active MarkdownView. Falls back across leaves so
+   * we can still get the editor selection when the chat panel itself is the
+   * active leaf (in which case getActiveViewOfType returns null).
+   */
+  findActiveMarkdownView() {
+    const direct = this.plugin.app.workspace.getActiveViewOfType(import_obsidian7.MarkdownView);
+    if (direct)
+      return direct;
+    const leaves = this.plugin.app.workspace.getLeavesOfType("markdown");
+    const lastPath = this.plugin.lastActiveMdPath;
+    if (lastPath) {
+      for (const leaf of leaves) {
+        const v3 = leaf.view;
+        if (v3?.file?.path === lastPath)
+          return v3;
+      }
+    }
+    return leaves.length > 0 ? leaves[0].view : null;
+  }
+  /** Snapshot the current editor selection into capturedSelection (no-op if empty). */
+  captureCurrentSelection() {
+    const view = this.findActiveMarkdownView();
+    const sel = view?.editor.getSelection() ?? "";
+    if (sel)
+      this.capturedSelection = sel;
+  }
   async onOpen() {
     const root = this.containerEl.children[1];
     root.empty();
     root.addClass("narrative-chat");
     this.mdComponent.load();
+    root.addEventListener("mousedown", () => this.captureCurrentSelection(), true);
     const header = root.createEl("div", { cls: "narrative-chat-header" });
     header.createEl("span", { text: "Narrative Chat", cls: "narrative-chat-title" });
     const clearBtn = header.createEl("button", {
@@ -49029,7 +49057,7 @@ var _NarrativeChatView = class extends import_obsidian7.ItemView {
   }
   getContext() {
     const vaultPath = this.plugin.app.vault.adapter instanceof import_obsidian7.FileSystemAdapter ? this.plugin.app.vault.adapter.getBasePath() : "";
-    const view = this.plugin.app.workspace.getActiveViewOfType(import_obsidian7.MarkdownView);
+    const view = this.findActiveMarkdownView();
     const relativePath = view?.file?.path ?? this.plugin.lastActiveMdPath ?? "";
     const filePath = vaultPath && relativePath ? `${vaultPath}/${relativePath}` : relativePath;
     const selection = this.capturedSelection ?? view?.editor.getSelection() ?? "";

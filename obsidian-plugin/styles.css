@@ -908,3 +908,10 @@
   color: var(--text-accent, #7c6ffb);
   font-weight: 500;
 }
+
+/* Keep the editor selection visible after focus moves to the chat panel,
+   so the author can see what text the AI will receive as context. */
+.cm-editor:not(.cm-focused) .cm-selectionBackground {
+  background-color: var(--text-selection) !important;
+}
+
