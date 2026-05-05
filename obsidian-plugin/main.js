@@ -4635,7 +4635,6 @@ var BackendManager = class {
           this.logLines.push(`[OUT] ${line}`);
           if (this.logLines.length > 200)
             this.logLines.shift();
-          console.log("[narrative-forge backend]", line);
         }
       });
       this.proc.stderr?.on("data", (chunk) => {
@@ -4647,8 +4646,7 @@ var BackendManager = class {
           console.error("[narrative-forge backend]", line);
         }
       });
-      this.proc.on("exit", (code, signal) => {
-        console.log(`[narrative-forge backend] exited (code=${code}, signal=${signal})`);
+      this.proc.on("exit", () => {
         this._running = false;
         this.proc = null;
       });
@@ -5329,9 +5327,9 @@ var _NarrativeSidebarView = class extends import_obsidian3.ItemView {
     header.createEl("span", { text: "Narrative Forge", cls: "narrative-sidebar-title" });
     const refreshBtn = header.createEl("button", {
       cls: "narrative-sidebar-refresh",
-      title: "Refresh"
+      title: "Refresh",
+      text: "\u21BB"
     });
-    refreshBtn.innerHTML = "&#8635;";
     refreshBtn.addEventListener("click", () => {
       void this.loadActiveTab();
     });
@@ -20080,7 +20078,6 @@ function makeNodeFetch() {
       };
       if (isLoopback)
         reqOpts.family = 4;
-      console.log("[NOS nodeFetch]", reqOpts.method, urlStr, "body bytes:", bodyBuf?.length ?? 0);
       const req = lib.request(reqOpts, (res) => {
         const resHeaders = new Headers();
         for (const [k2, v3] of Object.entries(res.headers)) {
@@ -20538,7 +20535,6 @@ var OpenAIAgent = class {
         yield { type: "tool_use", data: { name: tu2.name, input: tu2.input } };
       }
       totalToolCalls += toolUsesList.length;
-      console.log(`[NOS OpenAIAgent] turn ${turn}: text=${textContent.length}ch, toolCalls=${toolUsesList.length}`);
       currentMessages.push(assistantMessage);
       if (toolUsesList.length === 0)
         break;
@@ -20546,7 +20542,6 @@ var OpenAIAgent = class {
       currentMessages.push({ role: "user", content: toolResultsContent });
     }
     if (totalTextEmitted === 0 && totalToolCalls > 0) {
-      console.log("[NOS OpenAIAgent] no text emitted after tool calls \u2014 running tool-less final pass");
       const oaiMessages = mapAnthropicToOpenAIMessages(currentMessages, systemPrompt);
       oaiMessages.push({
         role: "user",
@@ -48625,7 +48620,6 @@ var VectorDatabase = class {
           onnxBackend.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/";
         }
       }
-      console.log("[Narrative Forge] Loading embedding model:", this.currentModelName);
       const proc = globalThis.process;
       const origNodeVersion = proc?.versions?.node;
       if (proc?.versions && origNodeVersion !== void 0) {
@@ -48647,7 +48641,6 @@ var VectorDatabase = class {
           proc.versions.node = origNodeVersion;
         }
       }
-      console.log("[Narrative Forge] Model loaded successfully");
     }
   }
   async embed(text) {
@@ -48737,7 +48730,6 @@ var VectorDatabase = class {
       try {
         const serialized = await app.vault.adapter.read(dbPath);
         this.db = await restore("json", serialized);
-        console.log("[Narrative Forge] Restored Orama DB from disk");
         if (!this.embedder) {
           await this._doInit();
         }
@@ -48890,23 +48882,32 @@ ${addLineNumbers(scene.text, fileLineStart)}`;
     const file = this.getFile(args.filename);
     if (!file)
       return `File not found: ${args.filename}. Available folders: chapters/, notes/`;
-    const content = await this.app.vault.read(file);
-    const result = applyLspEdit(
-      content,
-      args.start_line,
-      args.start_char,
-      args.end_line,
-      args.end_char,
-      args.new_text
-    );
-    if (typeof result === "object")
-      return result.error;
-    await this.app.vault.modify(file, result);
-    const before = content.split("\n").length;
-    const after = result.split("\n").length;
+    let editError = null;
+    let before = 0;
+    let after = 0;
+    await this.app.vault.process(file, (data) => {
+      const r2 = applyLspEdit(
+        data,
+        args.start_line,
+        args.start_char,
+        args.end_line,
+        args.end_char,
+        args.new_text
+      );
+      if (typeof r2 === "object") {
+        editError = r2.error;
+        return data;
+      }
+      before = data.split("\n").length;
+      after = r2.split("\n").length;
+      return r2;
+    });
+    if (editError)
+      return editError;
     let msg = `Replaced lines ${args.start_line}:${args.start_char}\u2013${args.end_line}:${args.end_char} in ${args.filename} (file: ${before} \u2192 ${after} lines).`;
     if (args.end_char === 0 && args.end_line < before) {
-      const preservedFirstLine = content.split("\n")[args.end_line - 1] ?? "";
+      const fileNow = await this.app.vault.read(file);
+      const preservedFirstLine = fileNow.split("\n")[args.end_line - 1] ?? "";
       const newLines = args.new_text.split("\n");
       const newTextLast = newLines[newLines.length - 1] ?? "";
       if (preservedFirstLine.length > 4 && newTextLast.trim() === preservedFirstLine.trim()) {
@@ -48920,9 +48921,10 @@ ${addLineNumbers(scene.text, fileLineStart)}`;
     const file = this.getFile(args.filename);
     if (!file)
       return `File not found: ${args.filename}. Available folders: chapters/, notes/`;
-    const content = await this.app.vault.read(file);
-    const separator = content.trim() ? "\n\n---\n\n" : "";
-    await this.app.vault.modify(file, content + separator + args.text);
+    await this.app.vault.process(file, (data) => {
+      const separator = data.trim() ? "\n\n---\n\n" : "";
+      return data + separator + args.text;
+    });
     return `Appended to ${args.filename}.`;
   }
   async write_scene(args) {
@@ -48963,9 +48965,10 @@ ${addLineNumbers(scene.text, fileLineStart)}`;
     }
     sceneParts.push(formattedText);
     const sceneBlock = sceneParts.join("\n");
-    const existing = await this.app.vault.read(file);
-    const separator = existing.trim() ? "\n\n---\n\n" : "";
-    await this.app.vault.modify(file, existing + separator + sceneBlock + "\n");
+    await this.app.vault.process(file, (existing) => {
+      const separator = existing.trim() ? "\n\n---\n\n" : "";
+      return existing + separator + sceneBlock + "\n";
+    });
     return `Written to ${args.filename}.
 
 Formatted text:
@@ -49108,7 +49111,6 @@ var _NarrativeChatView = class extends import_obsidian7.ItemView {
     void this.handleSend();
   }
   async sendMessage(text) {
-    console.log("[NOS chat] sendMessage called, isStreaming=", this.isStreaming, "text=", text.slice(0, 30));
     if (!text.trim() || this.isStreaming)
       return;
     this.messages.push({ role: "user", content: text });
@@ -49126,7 +49128,6 @@ var _NarrativeChatView = class extends import_obsidian7.ItemView {
       const { messages: apiMessages, bookDir } = await this.buildApiMessages();
       const language = this.plugin.getEmbeddingLanguage();
       if (provider === "cli") {
-        console.log("[NOS chat] using backend stream (CLI), bookDir=", bookDir);
         for await (const event of this.api.chatStream(
           apiMessages,
           provider,
@@ -49143,9 +49144,6 @@ var _NarrativeChatView = class extends import_obsidian7.ItemView {
         if (!apiKey && provider !== "local") {
           throw new Error(`API key is required for provider '${provider}'. Please set it in Narrative Forge settings.`);
         }
-        console.log(`[NOS chat] using local TS agent (${provider}: ${modelName}), bookDir=`, bookDir);
-        const lastUserPreview = String(apiMessages[apiMessages.length - 1]?.content ?? "").slice(0, 200);
-        console.log(`[NOS chat] apiHistory before send: ${this.apiHistory.length} msgs; lastUser="${lastUserPreview.replace(/\n/g, " \u23CE ")}\u2026"`);
         const localTools = new LocalToolExecutor(this.plugin.app, bookDir || "");
         const agent = createAgent(
           provider,
@@ -49380,8 +49378,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Narrative Forge Settings" });
-    containerEl.createEl("h3", { text: "Backend" });
+    new import_obsidian8.Setting(containerEl).setName("Backend").setHeading();
     new import_obsidian8.Setting(containerEl).setName("Backend mode").setDesc("How to connect to the narrative-forge Python backend.").addDropdown(
       (drop) => drop.addOption("external", "External URL (backend runs separately)").addOption("managed", "Managed (plugin starts/stops backend)").setValue(this.plugin.settings.backendMode).onChange(async (value) => {
         this.plugin.settings.backendMode = value;
@@ -49443,7 +49440,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
         }
       })
     );
-    containerEl.createEl("h3", { text: "LLM Provider" });
+    new import_obsidian8.Setting(containerEl).setName("LLM provider").setHeading();
     new import_obsidian8.Setting(containerEl).setName("Provider").setDesc("Which LLM to use for AI features.").addDropdown(
       (drop) => drop.addOption("cli", "Claude CLI (uses local Claude subscription)").addOption("anthropic", "Anthropic API (Claude)").addOption("openai", "OpenAI API (ChatGPT)").addOption("gemini", "Google Gemini API").addOption("local", "Local LLM (Ollama, LM Studio)").setValue(this.plugin.settings.provider === "api" ? "anthropic" : this.plugin.settings.provider).onChange(async (value) => {
         this.plugin.settings.provider = value;
@@ -49521,7 +49518,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
         })
       );
     }
-    containerEl.createEl("h3", { text: "Import" });
+    new import_obsidian8.Setting(containerEl).setName("Import").setHeading();
     new import_obsidian8.Setting(containerEl).setName("Auto-import on save").setDesc(
       "Automatically trigger book import when a .md file is saved."
     ).addToggle(
@@ -49538,7 +49535,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    containerEl.createEl("h3", { text: "Books" });
+    new import_obsidian8.Setting(containerEl).setName("Books").setHeading();
     new import_obsidian8.Setting(containerEl).setName("Create new book").setDesc(
       "Create a new book folder with .narrative-book.json marker and default structure."
     ).addButton(
@@ -49549,10 +49546,10 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
         }
       })
     );
-    containerEl.createEl("h3", { text: "About" });
+    new import_obsidian8.Setting(containerEl).setName("About").setHeading();
     const infoDiv = containerEl.createEl("div", { cls: "narrative-settings-info" });
     infoDiv.createEl("p", {
-      text: "Narrative Forge v0.5.1 \u2014 AI-powered writing assistant for fiction authors."
+      text: "Narrative Forge v0.6.0 \u2014 AI-powered writing assistant for fiction authors."
     });
     infoDiv.createEl("p", {
       text: "Start the backend with: uvicorn narrative_os.server:app --reload",
@@ -50216,9 +50213,7 @@ var LocalServer = class {
         res.end();
       }
     });
-    this.server.listen(port, "127.0.0.1", () => {
-      console.log(`[Narrative Forge] Local bridge server listening on http://127.0.0.1:${port}`);
-    });
+    this.server.listen(port, "127.0.0.1");
     this.server.on("error", (e2) => {
       console.error("[Narrative Forge] Local bridge server error:", e2);
       if (e2.code === "EADDRINUSE") {
@@ -50230,7 +50225,6 @@ var LocalServer = class {
     if (this.server) {
       this.server.close();
       this.server = null;
-      console.log("[Narrative Forge] Local bridge server stopped.");
     }
   }
 };
@@ -50417,7 +50411,6 @@ var NarrativePlugin = class extends import_obsidian14.Plugin {
     return this.settings.embeddingModel === "en" ? "en" : "uk";
   }
   async onload() {
-    console.log("[Narrative Forge] Loading plugin...");
     await this.loadSettings();
     if (this.settings.provider === "api") {
       this.settings.provider = "anthropic";
@@ -50523,7 +50516,6 @@ var NarrativePlugin = class extends import_obsidian14.Plugin {
       void this.startupReindex();
       void this.startupHealthCheck();
     });
-    console.log("[Narrative Forge] Plugin loaded.");
   }
   /**
    * Soft probe of the configured LLM endpoint (only when provider="local").
@@ -50541,7 +50533,6 @@ var NarrativePlugin = class extends import_obsidian14.Plugin {
     }
   }
   async onunload() {
-    console.log("[Narrative Forge] Unloading plugin...");
     this.localServer.stop();
     if (this.settings.backendMode === "managed") {
       await this.backend.stop();
@@ -50573,7 +50564,6 @@ var NarrativePlugin = class extends import_obsidian14.Plugin {
         const absDir = this.getAbsoluteBookDir();
         if (absDir) {
           this.reindexInProgress = true;
-          console.log(`[Narrative Forge] Book changed to ${result.bookRoot || "vault root"}, re-indexing...`);
           (async () => {
             try {
               await vectorDb.loadFromFile(this.app, result.bookRoot, this.settings.embeddingModel);
@@ -50591,7 +50581,6 @@ var NarrativePlugin = class extends import_obsidian14.Plugin {
                 ...currentData,
                 fileHashes: { ...currentData.fileHashes || {}, [absDir]: updated_cache }
               });
-              console.log("[Narrative Forge] Book switch reindex done.");
             } catch (e2) {
               console.error("[Narrative Forge] Book switch reindex failed:", e2);
             } finally {
@@ -50988,7 +50977,6 @@ Change in \`.narrative-book.json\` if running on a different port.
     }
     this.currentBookRoot = bookRoot;
     this.api.setBaseUrl(backendUrl);
-    console.log(`[Narrative Forge] Active book: ${absBookDir}`);
     await vectorDb.loadFromFile(this.app, bookRoot, this.settings.embeddingModel);
     try {
       const pluginData = await this.loadData() || {};
@@ -51005,7 +50993,6 @@ Change in \`.narrative-book.json\` if running on a different port.
         ...currentData,
         fileHashes: { ...currentData.fileHashes || {}, [absBookDir]: updated_cache }
       });
-      console.log(`[Narrative Forge] Startup reindex done: ${bookRoot || "vault root"}`);
     } catch (e2) {
       console.error("Startup reindex failed:", e2);
     }

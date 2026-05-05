@@ -46,7 +46,6 @@ export class BackendManager {
         if (line) {
           this.logLines.push(`[OUT] ${line}`);
           if (this.logLines.length > 200) this.logLines.shift();
-          console.log("[narrative-forge backend]", line);
         }
       });
 
@@ -59,8 +58,7 @@ export class BackendManager {
         }
       });
 
-      this.proc.on("exit", (code, signal) => {
-        console.log(`[narrative-forge backend] exited (code=${code}, signal=${signal})`);
+      this.proc.on("exit", () => {
         this._running = false;
         this.proc = null;
       });

@@ -62,8 +62,8 @@ export class NarrativeSidebarView extends ItemView {
     const refreshBtn = header.createEl("button", {
       cls: "narrative-sidebar-refresh",
       title: "Refresh",
+      text: "↻",
     });
-    refreshBtn.innerHTML = "&#8635;";
     refreshBtn.addEventListener("click", () => {
       void this.loadActiveTab();
     });

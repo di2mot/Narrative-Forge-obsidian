@@ -120,7 +120,6 @@ export default class NarrativePlugin extends Plugin {
   }
 
   async onload(): Promise<void> {
-    console.log("[Narrative Forge] Loading plugin...");
     await this.loadSettings();
 
     // Migrate old 'api' provider to 'anthropic'
@@ -309,7 +308,6 @@ export default class NarrativePlugin extends Plugin {
       void this.startupHealthCheck();
     });
 
-    console.log("[Narrative Forge] Plugin loaded.");
   }
 
   /**
@@ -329,7 +327,6 @@ export default class NarrativePlugin extends Plugin {
   }
 
   async onunload(): Promise<void> {
-    console.log("[Narrative Forge] Unloading plugin...");
     this.localServer.stop();
 
     if (this.settings.backendMode === "managed") {
@@ -373,7 +370,6 @@ export default class NarrativePlugin extends Plugin {
         const absDir = this.getAbsoluteBookDir();
         if (absDir) {
           this.reindexInProgress = true;
-          console.log(`[Narrative Forge] Book changed to ${result.bookRoot || 'vault root'}, re-indexing...`);
           (async () => {
             try {
               await vectorDb.loadFromFile(this.app, result.bookRoot, this.settings.embeddingModel);
@@ -387,7 +383,6 @@ export default class NarrativePlugin extends Plugin {
                 ...currentData,
                 fileHashes: { ...(currentData.fileHashes || {}), [absDir]: updated_cache }
               });
-              console.log("[Narrative Forge] Book switch reindex done.");
             } catch (e) {
               console.error("[Narrative Forge] Book switch reindex failed:", e);
             } finally {
@@ -825,7 +820,6 @@ Change in \`.narrative-book.json\` if running on a different port.
 
     this.currentBookRoot = bookRoot;
     this.api.setBaseUrl(backendUrl);
-    console.log(`[Narrative Forge] Active book: ${absBookDir}`);
 
     // Load persisted DB first for immediate search availability
     await vectorDb.loadFromFile(this.app, bookRoot, this.settings.embeddingModel);
@@ -841,7 +835,6 @@ Change in \`.narrative-book.json\` if running on a different port.
         ...currentData,
         fileHashes: { ...(currentData.fileHashes || {}), [absBookDir]: updated_cache }
       });
-      console.log(`[Narrative Forge] Startup reindex done: ${bookRoot || "vault root"}`);
     } catch (e) {
       console.error("Startup reindex failed:", e);
     }

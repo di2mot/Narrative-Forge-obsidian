@@ -189,7 +189,6 @@ export class NarrativeChatView extends ItemView {
   }
 
   async sendMessage(text: string): Promise<void> {
-    console.log("[NOS chat] sendMessage called, isStreaming=", this.isStreaming, "text=", text.slice(0, 30));
     if (!text.trim() || this.isStreaming) return;
 
     // Store plain text in history (for display and multi-turn context)
@@ -218,7 +217,6 @@ export class NarrativeChatView extends ItemView {
       const language = this.plugin.getEmbeddingLanguage();
 
       if (provider === "cli") {
-        console.log("[NOS chat] using backend stream (CLI), bookDir=", bookDir);
         for await (const event of this.api.chatStream(
           apiMessages,
           provider,
@@ -235,10 +233,6 @@ export class NarrativeChatView extends ItemView {
         if (!apiKey && provider !== "local") {
            throw new Error(`API key is required for provider '${provider}'. Please set it in Narrative Forge settings.`);
         }
-        console.log(`[NOS chat] using local TS agent (${provider}: ${modelName}), bookDir=`, bookDir);
-        const lastUserPreview = String(apiMessages[apiMessages.length - 1]?.content ?? "").slice(0, 200);
-        console.log(`[NOS chat] apiHistory before send: ${this.apiHistory.length} msgs; lastUser="${lastUserPreview.replace(/\n/g, " ⏎ ")}…"`);
-
         const localTools = new LocalToolExecutor(this.plugin.app, bookDir || "");
         const agent = createAgent(
           provider, 

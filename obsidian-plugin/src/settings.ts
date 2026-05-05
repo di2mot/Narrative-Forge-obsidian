@@ -51,13 +51,7 @@ export class NarrativeSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Narrative Forge Settings" });
-
-    // ---------------------------------------------------------------------------
-    // Backend section
-    // ---------------------------------------------------------------------------
-
-    containerEl.createEl("h3", { text: "Backend" });
+    new Setting(containerEl).setName("Backend").setHeading();
 
     new Setting(containerEl)
       .setName("Backend mode")
@@ -167,7 +161,7 @@ export class NarrativeSettingTab extends PluginSettingTab {
     // LLM Provider section
     // ---------------------------------------------------------------------------
 
-    containerEl.createEl("h3", { text: "LLM Provider" });
+    new Setting(containerEl).setName("LLM provider").setHeading();
 
     new Setting(containerEl)
       .setName("Provider")
@@ -295,7 +289,7 @@ export class NarrativeSettingTab extends PluginSettingTab {
     // Auto-import section
     // ---------------------------------------------------------------------------
 
-    containerEl.createEl("h3", { text: "Import" });
+    new Setting(containerEl).setName("Import").setHeading();
 
     new Setting(containerEl)
       .setName("Auto-import on save")
@@ -332,7 +326,7 @@ export class NarrativeSettingTab extends PluginSettingTab {
     // Books section
     // ---------------------------------------------------------------------------
 
-    containerEl.createEl("h3", { text: "Books" });
+    new Setting(containerEl).setName("Books").setHeading();
 
     new Setting(containerEl)
       .setName("Create new book")
@@ -355,10 +349,10 @@ export class NarrativeSettingTab extends PluginSettingTab {
     // Info section
     // ---------------------------------------------------------------------------
 
-    containerEl.createEl("h3", { text: "About" });
+    new Setting(containerEl).setName("About").setHeading();
     const infoDiv = containerEl.createEl("div", { cls: "narrative-settings-info" });
     infoDiv.createEl("p", {
-      text: "Narrative Forge v0.5.1 — AI-powered writing assistant for fiction authors.",
+      text: "Narrative Forge v0.6.0 — AI-powered writing assistant for fiction authors.",
     });
     infoDiv.createEl("p", {
       text: "Start the backend with: uvicorn narrative_os.server:app --reload",

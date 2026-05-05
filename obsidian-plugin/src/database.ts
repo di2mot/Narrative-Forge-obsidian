@@ -71,7 +71,6 @@ export class VectorDatabase {
           onnxBackend.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/";
         }
       }
-      console.log("[Narrative Forge] Loading embedding model:", this.currentModelName);
       // ort-wasm-simd-threaded.jsep.mjs does `await import("worker_threads")` when
       // process.versions.node is a string. The Electron renderer has node integration,
       // so this fires — but the .mjs is fetched as a remote ES module, and the browser
@@ -93,7 +92,6 @@ export class VectorDatabase {
           proc.versions.node = origNodeVersion;
         }
       }
-      console.log("[Narrative Forge] Model loaded successfully");
     }
   }
 
@@ -190,7 +188,6 @@ export class VectorDatabase {
       try {
         const serialized = await app.vault.adapter.read(dbPath);
         this.db = await restore("json", serialized) as unknown as Orama;
-        console.log("[Narrative Forge] Restored Orama DB from disk");
         // Load embedder without recreating the restored DB — reuse _doInit's WASM setup
         if (!this.embedder) {
           await this._doInit();

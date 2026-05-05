@@ -176,19 +176,23 @@ export class LocalToolExecutor {
     const file = this.getFile(args.filename);
     if (!file) return `File not found: ${args.filename}. Available folders: chapters/, notes/`;
 
-    const content = await this.app.vault.read(file);
-    const result = applyLspEdit(
-      content,
-      args.start_line, args.start_char,
-      args.end_line, args.end_char,
-      args.new_text
-    );
+    let editError: string | null = null;
+    let before = 0;
+    let after = 0;
+    await this.app.vault.process(file, (data) => {
+      const r = applyLspEdit(
+        data,
+        args.start_line, args.start_char,
+        args.end_line, args.end_char,
+        args.new_text
+      );
+      if (typeof r === 'object') { editError = r.error; return data; }
+      before = data.split("\n").length;
+      after = r.split("\n").length;
+      return r;
+    });
+    if (editError) return editError;
 
-    if (typeof result === 'object') return result.error;
-
-    await this.app.vault.modify(file, result);
-    const before = content.split("\n").length;
-    const after = result.split("\n").length;
     let msg = `Replaced lines ${args.start_line}:${args.start_char}–${args.end_line}:${args.end_char} in ${args.filename} (file: ${before} → ${after} lines).`;
 
     // Soft-detect the LSP coordinate misuse pattern: model meant for end_line to be the
@@ -196,7 +200,8 @@ export class LocalToolExecutor {
     // the model also put the same content at the end of new_text. Surface this so the
     // model self-corrects on the next call.
     if (args.end_char === 0 && args.end_line < before) {
-      const preservedFirstLine = content.split("\n")[args.end_line - 1] ?? "";
+      const fileNow = await this.app.vault.read(file);
+      const preservedFirstLine = fileNow.split("\n")[args.end_line - 1] ?? "";
       const newLines = args.new_text.split("\n");
       const newTextLast = newLines[newLines.length - 1] ?? "";
       if (preservedFirstLine.length > 4 && newTextLast.trim() === preservedFirstLine.trim()) {
@@ -210,9 +215,10 @@ export class LocalToolExecutor {
     const file = this.getFile(args.filename);
     if (!file) return `File not found: ${args.filename}. Available folders: chapters/, notes/`;
 
-    const content = await this.app.vault.read(file);
-    const separator = content.trim() ? "\n\n---\n\n" : "";
-    await this.app.vault.modify(file, content + separator + args.text);
+    await this.app.vault.process(file, (data) => {
+      const separator = data.trim() ? "\n\n---\n\n" : "";
+      return data + separator + args.text;
+    });
     return `Appended to ${args.filename}.`;
   }
 
@@ -256,9 +262,10 @@ export class LocalToolExecutor {
     sceneParts.push(formattedText);
     const sceneBlock = sceneParts.join("\n");
 
-    const existing = await this.app.vault.read(file);
-    const separator = existing.trim() ? "\n\n---\n\n" : "";
-    await this.app.vault.modify(file, existing + separator + sceneBlock + "\n");
+    await this.app.vault.process(file, (existing) => {
+      const separator = existing.trim() ? "\n\n---\n\n" : "";
+      return existing + separator + sceneBlock + "\n";
+    });
 
     return `Written to ${args.filename}.\n\nFormatted text:\n${sceneBlock}`;
   }

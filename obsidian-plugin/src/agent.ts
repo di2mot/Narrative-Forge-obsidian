@@ -64,8 +64,6 @@ function makeNodeFetch(): typeof fetch {
         headers,
       };
       if (isLoopback) reqOpts.family = 4;
-      console.log("[NOS nodeFetch]", reqOpts.method, urlStr, "body bytes:", bodyBuf?.length ?? 0);
-
       const req = lib.request(reqOpts, (res: any) => {
         const resHeaders = new Headers();
         for (const [k, v] of Object.entries(res.headers as Record<string, string | string[]>)) {
@@ -569,7 +567,6 @@ export class OpenAIAgent implements BaseAgent {
       }
       totalToolCalls += toolUsesList.length;
 
-      console.log(`[NOS OpenAIAgent] turn ${turn}: text=${textContent.length}ch, toolCalls=${toolUsesList.length}`);
       currentMessages.push(assistantMessage);
 
       if (toolUsesList.length === 0) break;
@@ -583,7 +580,6 @@ export class OpenAIAgent implements BaseAgent {
     // user sees an empty assistant bubble. Detect that and do one final tool-less
     // call to force a text answer based on whatever tool results we already have.
     if (totalTextEmitted === 0 && totalToolCalls > 0) {
-      console.log("[NOS OpenAIAgent] no text emitted after tool calls — running tool-less final pass");
       const oaiMessages = mapAnthropicToOpenAIMessages(currentMessages, systemPrompt);
       oaiMessages.push({
         role: "user",

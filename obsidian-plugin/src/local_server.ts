@@ -72,9 +72,7 @@ export class LocalServer {
       }
     });
 
-    this.server.listen(port, "127.0.0.1", () => {
-      console.log(`[Narrative Forge] Local bridge server listening on http://127.0.0.1:${port}`);
-    });
+    this.server.listen(port, "127.0.0.1");
 
     this.server.on("error", (e: NodeJS.ErrnoException) => {
       console.error("[Narrative Forge] Local bridge server error:", e);
@@ -88,7 +86,6 @@ export class LocalServer {
     if (this.server) {
       this.server.close();
       this.server = null;
-      console.log("[Narrative Forge] Local bridge server stopped.");
     }
   }
 }
