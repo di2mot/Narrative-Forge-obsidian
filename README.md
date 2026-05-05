@@ -401,4 +401,4 @@ In Obsidian Narrative Forge settings, set **Provider** to `Claude CLI`. The brid
 
 ## License
 
-AGPL-3.0
+MIT — see [LICENSE](../LICENSE).
