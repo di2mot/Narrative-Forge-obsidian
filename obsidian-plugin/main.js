@@ -20173,16 +20173,16 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "edit_scene",
-    description: "Edit text in a chapter file using precise line and character positions (LSP-style). Always call read_chapter first to see the file with file-relative line numbers, then specify the exact range to replace. start_char and end_char are 0-indexed within the line; end_char is exclusive.",
+    description: "Replace a range of text in a chapter file using LSP-style positions. Lines are 1-indexed (matching read_chapter output); chars are 0-indexed. The range is INCLUSIVE of the start position and EXCLUSIVE of the end position. RULE OF THUMB: to replace whole lines N through M (inclusive), set start_line=N, start_char=0, end_line=M+1, end_char=0. Setting end_line=M with end_char=0 will leave line M unchanged. Examples: replace just line 5 \u2192 (5,0)\u2192(6,0). Replace lines 5\u201310 \u2192 (5,0)\u2192(11,0). Edit chars 3\u20137 of line 5 \u2192 (5,3)\u2192(5,7). Always call read_chapter first to obtain correct coordinates.",
     input_schema: {
       type: "object",
       properties: {
         filename: { type: "string", description: "Chapter filename e.g. '01-siege.md'" },
-        start_line: { type: "integer", description: "Start line number (1-indexed, inclusive)" },
-        start_char: { type: "integer", description: "Start character offset on start_line (0-indexed, inclusive)" },
-        end_line: { type: "integer", description: "End line number (1-indexed, inclusive)" },
-        end_char: { type: "integer", description: "End character offset on end_line (0-indexed, exclusive)" },
-        new_text: { type: "string", description: "Replacement text (may span multiple lines)" }
+        start_line: { type: "integer", description: "Start line (1-indexed, inclusive)." },
+        start_char: { type: "integer", description: "Start char on start_line (0-indexed, inclusive)." },
+        end_line: { type: "integer", description: "End line (1-indexed). EXCLUSIVE: line end_line is preserved when end_char=0. To include line M in the edit, set end_line=M+1, end_char=0." },
+        end_char: { type: "integer", description: "End char on end_line (0-indexed, exclusive)." },
+        new_text: { type: "string", description: "Replacement text (may span multiple lines)." }
       },
       required: ["filename", "start_line", "start_char", "end_line", "end_char", "new_text"]
     }
@@ -20242,10 +20242,15 @@ async function buildSystemPrompt(app, bookDir) {
 - \`append_to_chapter\` \u2014 appends raw text to a chapter file.
 
 ## Editing workflow \u2014 follow this exactly
-1. Call \`read_chapter\` to see the file with line numbers.
-2. Identify the range to replace: note \`start_line\`, \`start_char\` (0-indexed), \`end_line\`, \`end_char\` (0-indexed, exclusive).
-3. Call \`edit_scene\` with those coordinates and the replacement text.
-4. Report what was changed.
+1. Call \`read_chapter\` to see the file with file-relative line numbers (1-indexed).
+2. Pick the range to replace. \`edit_scene\` uses LSP positions: lines 1-indexed, chars 0-indexed, end is **exclusive**.
+3. **CRITICAL \u2014 replacing whole lines N..M (inclusive):** use \`start_line=N, start_char=0, end_line=M+1, end_char=0\`. If you set \`end_line=M\` with \`end_char=0\`, line M is left untouched and you will get a duplicated last line in the file. Add 1 to end_line whenever you want the last line included.
+4. Examples:
+   - replace just line 5: \`(5,0) \u2192 (6,0)\`
+   - replace lines 17\u201328: \`(17,0) \u2192 (29,0)\`
+   - edit only chars 3\u20137 of line 5: \`(5,3) \u2192 (5,7)\`
+5. Call \`edit_scene\` with those coordinates and the replacement text.
+6. Report what was changed.
 
 Do NOT use \`read_scene\` as a substitute for \`read_chapter\` before editing \u2014 \`read_scene\` line numbers are scene-relative, \`read_chapter\` line numbers are file-relative and match \`edit_scene\` input.
 
@@ -48754,21 +48759,34 @@ function addLineNumbers(text, startLine = 1) {
   const width = String(lastNum).length;
   return lines.map((line, i2) => `${String(startLine + i2).padStart(width, " ")}: ${line}`).join("\n");
 }
-function applyLspEdit(content, startLine, startChar, endLine, endChar, newText) {
-  const lines = content.split("\n");
-  if (startLine < 1 || endLine < startLine || endLine > lines.length) {
-    return { error: `Invalid range: file has ${lines.length} lines.` };
+function positionToOffset(content, line, char) {
+  if (line <= 1)
+    return Math.min(char, content.length);
+  let offset = 0;
+  let currentLine = 1;
+  while (currentLine < line && offset < content.length) {
+    const nl2 = content.indexOf("\n", offset);
+    if (nl2 === -1) {
+      return content.length;
+    }
+    offset = nl2 + 1;
+    currentLine++;
   }
-  const prefix = lines[startLine - 1].slice(0, startChar);
-  const suffix = lines[endLine - 1].slice(endChar);
-  const newLines = newText.split("\n");
-  newLines[0] = prefix + newLines[0];
-  newLines[newLines.length - 1] += suffix;
-  return [
-    ...lines.slice(0, startLine - 1),
-    ...newLines,
-    ...lines.slice(endLine)
-  ].join("\n");
+  const nextNl = content.indexOf("\n", offset);
+  const lineEnd = nextNl === -1 ? content.length : nextNl;
+  return Math.min(offset + char, lineEnd);
+}
+function applyLspEdit(content, startLine, startChar, endLine, endChar, newText) {
+  const lineCount = content.split("\n").length;
+  if (startLine < 1 || startLine > lineCount || endLine < startLine || endLine > lineCount) {
+    return { error: `Invalid range: file has ${lineCount} lines.` };
+  }
+  const startOffset = positionToOffset(content, startLine, startChar);
+  const endOffset = positionToOffset(content, endLine, endChar);
+  if (endOffset < startOffset) {
+    return { error: `Invalid range: end position is before start position.` };
+  }
+  return content.slice(0, startOffset) + newText + content.slice(endOffset);
 }
 var DIALOGUE_RE2 = /^\[character:\s*[^\]]+\]\s*[—–-]/;
 var COLON_RE = /^(?:\*\*|__)*([А-ЯІЇЄA-Z][^:\*\_]{1,30})(?:\*\*|__)*:\s+(.+)$/;
@@ -48884,9 +48902,19 @@ ${addLineNumbers(scene.text, fileLineStart)}`;
     if (typeof result === "object")
       return result.error;
     await this.app.vault.modify(file, result);
-    const oldLineCount = args.end_line - args.start_line + 1;
-    const newLineCount = args.new_text.split("\n").length;
-    return `Replaced lines ${args.start_line}:${args.start_char}\u2013${args.end_line}:${args.end_char} in ${args.filename} (${oldLineCount} \u2192 ${newLineCount} lines).`;
+    const before = content.split("\n").length;
+    const after = result.split("\n").length;
+    let msg = `Replaced lines ${args.start_line}:${args.start_char}\u2013${args.end_line}:${args.end_char} in ${args.filename} (file: ${before} \u2192 ${after} lines).`;
+    if (args.end_char === 0 && args.end_line < before) {
+      const preservedFirstLine = content.split("\n")[args.end_line - 1] ?? "";
+      const newLines = args.new_text.split("\n");
+      const newTextLast = newLines[newLines.length - 1] ?? "";
+      if (preservedFirstLine.length > 4 && newTextLast.trim() === preservedFirstLine.trim()) {
+        msg += `
+\u26A0 Likely duplicate: line ${args.end_line} ("${preservedFirstLine.slice(0, 40)}\u2026") was preserved (LSP exclusive end), and your new_text ends with the same content. To include line ${args.end_line} in the replacement, call again with end_line=${args.end_line + 1}, end_char=0.`;
+      }
+    }
+    return msg;
   }
   async append_to_chapter(args) {
     const file = this.getFile(args.filename);
@@ -49524,7 +49552,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
     containerEl.createEl("h3", { text: "About" });
     const infoDiv = containerEl.createEl("div", { cls: "narrative-settings-info" });
     infoDiv.createEl("p", {
-      text: "Narrative Forge v0.5.0 \u2014 AI-powered writing assistant for fiction authors."
+      text: "Narrative Forge v0.5.1 \u2014 AI-powered writing assistant for fiction authors."
     });
     infoDiv.createEl("p", {
       text: "Start the backend with: uvicorn narrative_os.server:app --reload",

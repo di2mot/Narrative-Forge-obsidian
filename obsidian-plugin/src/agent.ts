@@ -171,16 +171,20 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   },
   {
     name: "edit_scene",
-    description: "Edit text in a chapter file using precise line and character positions (LSP-style). Always call read_chapter first to see the file with file-relative line numbers, then specify the exact range to replace. start_char and end_char are 0-indexed within the line; end_char is exclusive.",
+    description:
+      "Replace a range of text in a chapter file using LSP-style positions. Lines are 1-indexed (matching read_chapter output); chars are 0-indexed. The range is INCLUSIVE of the start position and EXCLUSIVE of the end position. " +
+      "RULE OF THUMB: to replace whole lines N through M (inclusive), set start_line=N, start_char=0, end_line=M+1, end_char=0. Setting end_line=M with end_char=0 will leave line M unchanged. " +
+      "Examples: replace just line 5 → (5,0)→(6,0). Replace lines 5–10 → (5,0)→(11,0). Edit chars 3–7 of line 5 → (5,3)→(5,7). " +
+      "Always call read_chapter first to obtain correct coordinates.",
     input_schema: {
       type: "object",
       properties: {
         filename: { type: "string", description: "Chapter filename e.g. '01-siege.md'" },
-        start_line: { type: "integer", description: "Start line number (1-indexed, inclusive)" },
-        start_char: { type: "integer", description: "Start character offset on start_line (0-indexed, inclusive)" },
-        end_line: { type: "integer", description: "End line number (1-indexed, inclusive)" },
-        end_char: { type: "integer", description: "End character offset on end_line (0-indexed, exclusive)" },
-        new_text: { type: "string", description: "Replacement text (may span multiple lines)" },
+        start_line: { type: "integer", description: "Start line (1-indexed, inclusive)." },
+        start_char: { type: "integer", description: "Start char on start_line (0-indexed, inclusive)." },
+        end_line: { type: "integer", description: "End line (1-indexed). EXCLUSIVE: line end_line is preserved when end_char=0. To include line M in the edit, set end_line=M+1, end_char=0." },
+        end_char: { type: "integer", description: "End char on end_line (0-indexed, exclusive)." },
+        new_text: { type: "string", description: "Replacement text (may span multiple lines)." },
       },
       required: ["filename", "start_line", "start_char", "end_line", "end_char", "new_text"],
     },
@@ -245,10 +249,15 @@ async function buildSystemPrompt(app: any, bookDir: string): Promise<string> {
 - \`append_to_chapter\` — appends raw text to a chapter file.
 
 ## Editing workflow — follow this exactly
-1. Call \`read_chapter\` to see the file with line numbers.
-2. Identify the range to replace: note \`start_line\`, \`start_char\` (0-indexed), \`end_line\`, \`end_char\` (0-indexed, exclusive).
-3. Call \`edit_scene\` with those coordinates and the replacement text.
-4. Report what was changed.
+1. Call \`read_chapter\` to see the file with file-relative line numbers (1-indexed).
+2. Pick the range to replace. \`edit_scene\` uses LSP positions: lines 1-indexed, chars 0-indexed, end is **exclusive**.
+3. **CRITICAL — replacing whole lines N..M (inclusive):** use \`start_line=N, start_char=0, end_line=M+1, end_char=0\`. If you set \`end_line=M\` with \`end_char=0\`, line M is left untouched and you will get a duplicated last line in the file. Add 1 to end_line whenever you want the last line included.
+4. Examples:
+   - replace just line 5: \`(5,0) → (6,0)\`
+   - replace lines 17–28: \`(17,0) → (29,0)\`
+   - edit only chars 3–7 of line 5: \`(5,3) → (5,7)\`
+5. Call \`edit_scene\` with those coordinates and the replacement text.
+6. Report what was changed.
 
 Do NOT use \`read_scene\` as a substitute for \`read_chapter\` before editing — \`read_scene\` line numbers are scene-relative, \`read_chapter\` line numbers are file-relative and match \`edit_scene\` input.
 

@@ -55,4 +55,34 @@ describe('applyLspEdit', () => {
     expect(applyLspEdit(content, 3, 0, 2, 0, 'x'))
       .toEqual({ error: 'Invalid range: file has 4 lines.' });
   });
+
+  it('replaces lines N..M when end_line=M+1, end_char=0 (LSP exclusive end)', () => {
+    // Replace lines 1–2 inclusive: end_line should be 3 (line 3 preserved)
+    expect(applyLspEdit(content, 1, 0, 3, 0, 'NEW1\nNEW2\n'))
+      .toBe('NEW1\nNEW2\nline three\n');
+  });
+
+  it('LSP correctness: replacing lines 2–4 of a 4-line file uses end_line=5', () => {
+    // Mirrors the user-reported scenario: a paragraph is lines 2–4; model wants
+    // to replace it with a polished version. Correct call passes end_line one
+    // PAST the last replaced line, with new_text providing its own newlines.
+    const file = 'header\nold para 1\nold para 2\nЧас спати.\n';
+    const newText = 'new para 1\nnew para 2\nЧас спати.\n';
+    const out = applyLspEdit(file, 2, 0, 5, 0, newText);
+    expect(out).toBe('header\nnew para 1\nnew para 2\nЧас спати.\n');
+    expect((out.match(/Час спати/g) || []).length).toBe(1);
+  });
+
+  it('documents the model-misuse case that produces duplication', () => {
+    // If the model misuses end_line (passes the last line it WANTS replaced with
+    // end_char=0), LSP exclusive-end semantics preserve that line. If new_text
+    // also ends with that line content, the result has the line twice. The fix
+    // is the system prompt — see edit_scene tool description.
+    const file = 'header\nold\nЧас спати.\n';
+    const newText = 'new\nЧас спати.';
+    const out = applyLspEdit(file, 2, 0, 3, 0, newText);
+    // Line 3 ('Час спати.') was preserved per LSP semantics; new_text also
+    // ended with that line → duplication. Demonstrated, not desired.
+    expect((out.match(/Час спати/g) || []).length).toBe(2);
+  });
 });

@@ -13,6 +13,31 @@ export function addLineNumbers(text: string, startLine: number = 1): string {
 
 export type LspEditResult = string | { error: string };
 
+/**
+ * Convert a (line, char) position into a character offset in `content`.
+ * `line` is 1-indexed; `char` is the 0-indexed column within that line.
+ * `(line=N, char=0)` is the position immediately BEFORE the first character
+ * of line N — so a range ending there leaves line N untouched.
+ */
+function positionToOffset(content: string, line: number, char: number): number {
+  if (line <= 1) return Math.min(char, content.length);
+  let offset = 0;
+  let currentLine = 1;
+  while (currentLine < line && offset < content.length) {
+    const nl = content.indexOf("\n", offset);
+    if (nl === -1) {
+      // line is past the last line — clamp to end of file
+      return content.length;
+    }
+    offset = nl + 1;
+    currentLine++;
+  }
+  // Clamp char to the actual line length so out-of-range chars don't reach into the next line.
+  const nextNl = content.indexOf("\n", offset);
+  const lineEnd = nextNl === -1 ? content.length : nextNl;
+  return Math.min(offset + char, lineEnd);
+}
+
 export function applyLspEdit(
   content: string,
   startLine: number,
@@ -21,20 +46,16 @@ export function applyLspEdit(
   endChar: number,
   newText: string
 ): LspEditResult {
-  const lines = content.split('\n');
-  if (startLine < 1 || endLine < startLine || endLine > lines.length) {
-    return { error: `Invalid range: file has ${lines.length} lines.` };
+  const lineCount = content.split("\n").length;
+  if (startLine < 1 || startLine > lineCount || endLine < startLine || endLine > lineCount) {
+    return { error: `Invalid range: file has ${lineCount} lines.` };
   }
-  const prefix = lines[startLine - 1].slice(0, startChar);
-  const suffix = lines[endLine - 1].slice(endChar);
-  const newLines = newText.split('\n');
-  newLines[0] = prefix + newLines[0];
-  newLines[newLines.length - 1] += suffix;
-  return [
-    ...lines.slice(0, startLine - 1),
-    ...newLines,
-    ...lines.slice(endLine),
-  ].join('\n');
+  const startOffset = positionToOffset(content, startLine, startChar);
+  const endOffset = positionToOffset(content, endLine, endChar);
+  if (endOffset < startOffset) {
+    return { error: `Invalid range: end position is before start position.` };
+  }
+  return content.slice(0, startOffset) + newText + content.slice(endOffset);
 }
 
 const DIALOGUE_RE = /^\[character:\s*[^\]]+\]\s*[—–-]/;
@@ -166,9 +187,23 @@ export class LocalToolExecutor {
     if (typeof result === 'object') return result.error;
 
     await this.app.vault.modify(file, result);
-    const oldLineCount = args.end_line - args.start_line + 1;
-    const newLineCount = args.new_text.split('\n').length;
-    return `Replaced lines ${args.start_line}:${args.start_char}–${args.end_line}:${args.end_char} in ${args.filename} (${oldLineCount} → ${newLineCount} lines).`;
+    const before = content.split("\n").length;
+    const after = result.split("\n").length;
+    let msg = `Replaced lines ${args.start_line}:${args.start_char}–${args.end_line}:${args.end_char} in ${args.filename} (file: ${before} → ${after} lines).`;
+
+    // Soft-detect the LSP coordinate misuse pattern: model meant for end_line to be the
+    // last line replaced (with end_char=0) but LSP semantics preserve that line, and
+    // the model also put the same content at the end of new_text. Surface this so the
+    // model self-corrects on the next call.
+    if (args.end_char === 0 && args.end_line < before) {
+      const preservedFirstLine = content.split("\n")[args.end_line - 1] ?? "";
+      const newLines = args.new_text.split("\n");
+      const newTextLast = newLines[newLines.length - 1] ?? "";
+      if (preservedFirstLine.length > 4 && newTextLast.trim() === preservedFirstLine.trim()) {
+        msg += `\n⚠ Likely duplicate: line ${args.end_line} ("${preservedFirstLine.slice(0, 40)}…") was preserved (LSP exclusive end), and your new_text ends with the same content. To include line ${args.end_line} in the replacement, call again with end_line=${args.end_line + 1}, end_char=0.`;
+      }
+    }
+    return msg;
   }
 
   async append_to_chapter(args: { filename: string; text: string }): Promise<string> {

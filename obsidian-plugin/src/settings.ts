@@ -358,7 +358,7 @@ export class NarrativeSettingTab extends PluginSettingTab {
     containerEl.createEl("h3", { text: "About" });
     const infoDiv = containerEl.createEl("div", { cls: "narrative-settings-info" });
     infoDiv.createEl("p", {
-      text: "Narrative Forge v0.5.0 — AI-powered writing assistant for fiction authors.",
+      text: "Narrative Forge v0.5.1 — AI-powered writing assistant for fiction authors.",
     });
     infoDiv.createEl("p", {
       text: "Start the backend with: uvicorn narrative_os.server:app --reload",
