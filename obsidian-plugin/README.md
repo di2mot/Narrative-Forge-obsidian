@@ -14,6 +14,8 @@ AI assistant for fiction writers, embedded inside Obsidian. Search and edit your
 
 ## Install
 
+> Once accepted into the [Obsidian Community Plugins directory](https://obsidian.md/plugins), install via **Settings → Community plugins → Browse → "Narrative Forge"**. Until then, install manually:
+
 ### Manually (BRAT or git clone)
 
 1. Clone or download this repository.

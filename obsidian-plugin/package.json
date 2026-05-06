@@ -1,6 +1,15 @@
 {
   "name": "obsidian-narrative-forge",
-  "version": "0.6.0",
+  "version": "0.7.0",
+  "description": "AI assistant for fiction writers. Search and edit your book with Claude, GPT, Gemini, or local LLMs (Ollama, LM Studio).",
+  "keywords": [
+    "obsidian-plugin",
+    "ai",
+    "writing",
+    "fiction",
+    "rag"
+  ],
+  "license": "MIT",
   "private": true,
   "scripts": {
     "dev": "node esbuild.config.mjs",
@@ -15,7 +24,6 @@
     "@huggingface/transformers": "^3.8.1",
     "@orama/orama": "^3.1.18",
     "@orama/plugin-data-persistence": "^3.1.18",
-    "@xenova/transformers": "^2.17.2",
     "obsidian": "latest",
     "onnxruntime-web": "^1.14.0",
     "openai": "^6.35.0"

@@ -46,7 +46,7 @@ The AI never guesses — it uses local tools to look up your book before generat
 
 ## Requirements
 
-- [Obsidian](https://obsidian.md) **1.0+** (desktop only)
+- [Obsidian](https://obsidian.md) **1.5.11+** (desktop only)
 - One of:
   - **Anthropic API key** (Claude) — [console.anthropic.com](https://console.anthropic.com)
   - **OpenAI API key** — [platform.openai.com](https://platform.openai.com)
@@ -57,13 +57,15 @@ The AI never guesses — it uses local tools to look up your book before generat
 
 ## Installation
 
+> Once Narrative Forge is accepted into the [Obsidian Community Plugins directory](https://obsidian.md/plugins), the recommended install path will be **Settings → Community plugins → Browse → search "Narrative Forge"**. Until then, install manually:
+
 ### Step 1 — Build the plugin
 
 You need Node.js 18+ installed.
 
 ```bash
-git clone https://github.com/di2mot/narrative-os
-cd narrative-os/obsidian-plugin
+git clone https://github.com/di2mot/Narrative-Forge-obsidian
+cd Narrative-Forge-obsidian/obsidian-plugin
 npm install
 npm run build
 ```
@@ -346,8 +348,8 @@ npm run build
 ## Development
 
 ```bash
-git clone https://github.com/di2mot/narrative-os
-cd narrative-os/obsidian-plugin
+git clone https://github.com/di2mot/Narrative-Forge-obsidian
+cd Narrative-Forge-obsidian/obsidian-plugin
 npm install
 
 # Watch mode (rebuilds on file change)

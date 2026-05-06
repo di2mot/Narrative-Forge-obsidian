@@ -21,6 +21,10 @@
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
+.narrative-hover-tooltip.is-visible {
+  display: block;
+}
+
 /* ============================================================
    Decorations in editor
    ============================================================ */
@@ -557,6 +561,10 @@
   font-weight: bold;
 }
 
+.narrative-stream-indicator.is-hidden {
+  display: none;
+}
+
 @keyframes narrative-blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
@@ -896,6 +904,7 @@
 .narrative-session-bar {
   font-size: 12px;
   opacity: 0.7;
+  cursor: pointer;
   transition: opacity 0.2s;
 }
 

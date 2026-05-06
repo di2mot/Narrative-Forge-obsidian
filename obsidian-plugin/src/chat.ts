@@ -320,7 +320,7 @@ export class NarrativeChatView extends ItemView {
       this.isStreaming = false;
       // Hide streaming cursor
       const indicator = assistantEl.querySelector(".narrative-stream-indicator") as HTMLElement | null;
-      if (indicator) indicator.style.display = "none";
+      if (indicator) indicator.classList.add("is-hidden");
       this.sendBtn.disabled = false;
       this.sendBtn.textContent = "Send";
       this.scrollToBottom();

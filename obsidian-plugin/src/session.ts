@@ -126,7 +126,6 @@ export class WritingSession {
     this.plugin = plugin;
     const item = plugin.addStatusBarItem();
     item.addClass("narrative-session-bar");
-    item.style.cursor = "pointer";
     this.statusEl = item;
 
     this.renderIdle();

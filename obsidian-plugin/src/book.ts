@@ -205,12 +205,8 @@ export class BookManager {
       return;
     }
 
-    // File exists — update appears_in
-    const content = await vault.read(existing);
-    const updated = this.addToAppearsIn(content, chapterLink, type);
-    if (updated !== content) {
-      await vault.modify(existing, updated);
-    }
+    // File exists — update appears_in (atomic via vault.process)
+    await vault.process(existing, (data) => this.addToAppearsIn(data, chapterLink, type));
   }
 
   private buildNoteContent(

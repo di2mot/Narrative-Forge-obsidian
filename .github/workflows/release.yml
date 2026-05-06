@@ -30,7 +30,18 @@ jobs:
           tag="${GITHUB_REF#refs/tags/}"
           manifest_version=$(node -p "require('./obsidian-plugin/manifest.json').version")
           if [ "$tag" != "$manifest_version" ]; then
-            echo "Tag ($tag) does not match manifest.json version ($manifest_version)" >&2
+            echo "Tag ($tag) does not match obsidian-plugin/manifest.json version ($manifest_version)" >&2
+            exit 1
+          fi
+
+      - name: Verify root manifest.json + versions.json mirror plugin folder
+        run: |
+          if ! diff -q manifest.json obsidian-plugin/manifest.json > /dev/null; then
+            echo "manifest.json at repo root is out of sync with obsidian-plugin/manifest.json" >&2
+            exit 1
+          fi
+          if ! diff -q versions.json obsidian-plugin/versions.json > /dev/null; then
+            echo "versions.json at repo root is out of sync with obsidian-plugin/versions.json" >&2
             exit 1
           fi
 

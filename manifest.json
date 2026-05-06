@@ -1,0 +1,10 @@
+{
+  "id": "narrative-forge",
+  "name": "Narrative Forge",
+  "version": "0.7.0",
+  "minAppVersion": "1.5.11",
+  "description": "AI assistant for fiction writers. Search and edit your book with Claude, GPT, Gemini, or local LLMs (Ollama, LM Studio).",
+  "author": "di2mot",
+  "authorUrl": "https://github.com/di2mot",
+  "isDesktopOnly": true
+}

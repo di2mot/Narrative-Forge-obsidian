@@ -64,9 +64,8 @@ class DashWidget extends WidgetType {
     const span = document.createElement("span");
     span.className = "narrative-dash-widget";
     span.textContent = "— ";
+    // Color is per-character (dynamic), so it stays inline; the rest is in CSS.
     span.style.color = this.color;
-    span.style.userSelect = "none";
-    span.style.fontWeight = "bold";
     span.dataset["char"] = this.charName;
     span.title = this.charName;
     return span;
@@ -292,14 +291,15 @@ export function buildNosDecorations(
           document.body.appendChild(tooltipEl);
         }
         tooltipEl.textContent = `Character: ${name}`;
+        // Position is dynamic per cursor, so left/top stay inline.
         tooltipEl.style.left = `${x + 12}px`;
         tooltipEl.style.top = `${y - 30}px`;
-        tooltipEl.style.display = "block";
+        tooltipEl.classList.add("is-visible");
       }
 
       private hideTooltip() {
         if (tooltipEl) {
-          tooltipEl.style.display = "none";
+          tooltipEl.classList.remove("is-visible");
         }
       }
     },
