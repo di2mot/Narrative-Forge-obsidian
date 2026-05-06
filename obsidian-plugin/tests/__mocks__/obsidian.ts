@@ -1,7 +1,18 @@
 // Mock Obsidian API for testing
 export class App {}
-export class TFile {}
-export class FileSystemAdapter {}
+export class TFile {
+  path = "";
+  name = "";
+  basename = "";
+  extension = "";
+}
+export class FileSystemAdapter {
+  getBasePath() { return ""; }
+}
+
+export function normalizePath(p: string): string {
+  return p.replace(/\\+/g, "/").replace(/\/+/g, "/").replace(/^\/+|\/+$/g, "");
+}
 
 /**
  * Minimal YAML parser for test mocks. Handles the subset used by

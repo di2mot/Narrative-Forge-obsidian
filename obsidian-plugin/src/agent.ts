@@ -217,7 +217,52 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     name: "get_book_info",
     description: "Get general information about the book (chapter count). Call only when the author explicitly asks about indexing status.",
     input_schema: { type: "object", properties: {} },
-  }
+  },
+  {
+    name: "list_chapters",
+    description: "List every chapter file with its number, title, status, and approximate word count. Use this when the author asks 'what chapters do I have?' or to find the right filename for read_chapter.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "list_characters",
+    description: "List every character that has dialogue in the book, ranked by how many lines they speak. Auto-detected from `[character: Name]` dialogue tags.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "search_by_character",
+    description: "Find every scene featuring a given character (by exact name match against dialogue tags or scene metadata). Faster and more deterministic than search_semantic when the author names a specific character.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Character name as it appears in `[character: Name]` tags." },
+        n: { type: "integer", description: "Maximum number of scenes to return (default 20)." },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "search_by_location",
+    description: "Find every scene at a given location (case-insensitive substring match against scene `location::` metadata).",
+    input_schema: {
+      type: "object",
+      properties: {
+        location: { type: "string", description: "Location name or partial match." },
+        n: { type: "integer", description: "Maximum number of scenes to return (default 20)." },
+      },
+      required: ["location"],
+    },
+  },
+  {
+    name: "get_chapter",
+    description: "Read the full chapter file matching a given chapter number (from frontmatter `chapter:`). Returned with file-relative line numbers; suitable for editing with edit_scene.",
+    input_schema: {
+      type: "object",
+      properties: {
+        chapter_number: { type: "integer", description: "Chapter number from the file's frontmatter." },
+      },
+      required: ["chapter_number"],
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -239,7 +284,12 @@ async function buildSystemPrompt(app: any, bookDir: string): Promise<string> {
 
 ## Available tools
 - \`get_book_info\` — returns the number of indexed chapters. Call this if the author asks about indexing status.
+- \`list_chapters\` — lists every chapter file with number, title, status, and word count. Use this to discover filenames before \`read_chapter\`.
+- \`list_characters\` — lists every character with dialogue, ranked by line count.
 - \`search_semantic\` — semantic similarity search across all scenes. Use this to find relevant context before writing.
+- \`search_by_character\` — fast exact-name lookup of every scene featuring a given character.
+- \`search_by_location\` — fast lookup of every scene at a given location.
+- \`get_chapter\` — read a chapter by its frontmatter \`chapter:\` number (returns full content with line numbers).
 - \`read_scene\` — reads one scene from a chapter file (with file-relative line numbers).
 - \`read_chapter\` — reads the full chapter file with line numbers. Use this before editing.
 - \`edit_scene\` — replaces a range of lines in a chapter file (LSP-style, line+char coordinates).
@@ -325,6 +375,8 @@ Rules from CLAUDE.md override your defaults. Always check CLAUDE.md before inven
 const LOCAL_TOOL_NAMES = new Set([
   "read_scene", "read_chapter", "edit_scene", "write_scene",
   "append_to_chapter", "search_semantic", "get_book_info",
+  "list_chapters", "list_characters", "search_by_character",
+  "search_by_location", "get_chapter",
 ]);
 
 async function executeTools(toolUses: Array<{ id: string; name: string; input: any }>, localTools: any, api: any, bookDir: string): Promise<Anthropic.ToolResultBlockParam[]> {

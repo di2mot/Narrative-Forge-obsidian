@@ -269,4 +269,116 @@ export class LocalToolExecutor {
 
     return `Written to ${args.filename}.\n\nFormatted text:\n${sceneBlock}`;
   }
+
+  /** All chapter `.md` files inside the book's `chapters/` folder, sorted by name. */
+  private getChapterFiles(): TFile[] {
+    const d = this.vaultBookDir;
+    const folder = d ? `${d}/chapters` : "chapters";
+    return this.app.vault
+      .getFiles()
+      .filter((f) => f.path.startsWith(folder + "/") && f.extension === "md")
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async list_chapters(_args: unknown): Promise<string> {
+    const files = this.getChapterFiles();
+    if (files.length === 0) return "No chapters found in chapters/.";
+
+    const rows: string[] = [];
+    for (const file of files) {
+      const content = await this.app.vault.read(file);
+      const chapter = parseChapter(content, file.name);
+      const number = chapter?.number ?? 0;
+      const title = chapter?.title ?? file.basename;
+      const status = chapter?.status ?? "";
+      const wordCount = content.replace(/^---[\s\S]*?\n---\n/, "").trim().split(/\s+/).filter(Boolean).length;
+      rows.push(`- ${file.name} — chapter ${number}: ${title}${status ? ` (${status})` : ""} — ~${wordCount} words`);
+    }
+    return `Chapters (${files.length}):\n${rows.join("\n")}`;
+  }
+
+  async list_characters(_args: unknown): Promise<string> {
+    const files = this.getChapterFiles();
+    const counts = new Map<string, number>();
+    for (const file of files) {
+      const content = await this.app.vault.read(file);
+      for (const m of content.matchAll(/^\[character:\s*([^\]]+)\]/gim)) {
+        const name = m[1].trim();
+        counts.set(name, (counts.get(name) ?? 0) + 1);
+      }
+    }
+    if (counts.size === 0) {
+      return "No characters detected. Characters are auto-detected from `[character: Name] — …` dialogue lines.";
+    }
+    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    return `Characters (${sorted.length}):\n${sorted.map(([n, c]) => `- ${n} — ${c} dialogue line${c === 1 ? "" : "s"}`).join("\n")}`;
+  }
+
+  async search_by_character(args: { name: string; n?: number }): Promise<string> {
+    if (!args.name?.trim()) return "Provide a character name.";
+    const target = args.name.trim().toLowerCase();
+    const limit = Math.max(1, Math.min(50, args.n ?? 20));
+    const files = this.getChapterFiles();
+    const hits: string[] = [];
+    for (const file of files) {
+      if (hits.length >= limit) break;
+      const content = await this.app.vault.read(file);
+      const chapter = parseChapter(content, file.name);
+      if (!chapter) continue;
+      for (let i = 0; i < chapter.scenes.length && hits.length < limit; i++) {
+        const scene = chapter.scenes[i];
+        const inDialogue = scene.dialogue.some((d) => d.character.toLowerCase() === target);
+        const inMeta = scene.characters.some((c) => c.toLowerCase() === target);
+        if (inDialogue || inMeta) {
+          const preview = scene.text.replace(/\s+/g, " ").slice(0, 160);
+          hits.push(`- ${file.name} scene ${i} (${scene.location || "—"} / ${scene.timeline || "—"}): ${preview}…`);
+        }
+      }
+    }
+    if (hits.length === 0) return `No scenes found featuring "${args.name}".`;
+    return `Scenes featuring "${args.name}" (${hits.length}):\n${hits.join("\n")}`;
+  }
+
+  async search_by_location(args: { location: string; n?: number }): Promise<string> {
+    if (!args.location?.trim()) return "Provide a location.";
+    const target = args.location.trim().toLowerCase();
+    const limit = Math.max(1, Math.min(50, args.n ?? 20));
+    const files = this.getChapterFiles();
+    const hits: string[] = [];
+    for (const file of files) {
+      if (hits.length >= limit) break;
+      const content = await this.app.vault.read(file);
+      const chapter = parseChapter(content, file.name);
+      if (!chapter) continue;
+      for (let i = 0; i < chapter.scenes.length && hits.length < limit; i++) {
+        const scene = chapter.scenes[i];
+        if (scene.location.toLowerCase().includes(target)) {
+          const preview = scene.text.replace(/\s+/g, " ").slice(0, 160);
+          hits.push(`- ${file.name} scene ${i} (${scene.location} / ${scene.timeline || "—"}): ${preview}…`);
+        }
+      }
+    }
+    if (hits.length === 0) return `No scenes found at "${args.location}".`;
+    return `Scenes at "${args.location}" (${hits.length}):\n${hits.join("\n")}`;
+  }
+
+  async get_chapter(args: { chapter_number: number }): Promise<string> {
+    const target = Number(args.chapter_number);
+    if (!Number.isFinite(target)) return "Provide a numeric chapter_number.";
+    const files = this.getChapterFiles();
+    for (const file of files) {
+      const content = await this.app.vault.read(file);
+      const chapter = parseChapter(content, file.name);
+      if (chapter && chapter.number === target) {
+        const MAX_CHARS = 8000;
+        if (content.length > MAX_CHARS) {
+          const cutoff = content.lastIndexOf("\n", MAX_CHARS);
+          const truncated = content.slice(0, cutoff > 0 ? cutoff : MAX_CHARS);
+          return `[Chapter ${target} — ${file.name}]\n${addLineNumbers(truncated)}\n\n[NOTE: truncated; use read_scene with scene_index for specific scenes.]`;
+        }
+        return `[Chapter ${target} — ${file.name}]\n${addLineNumbers(content)}`;
+      }
+    }
+    return `No chapter with number ${target} found. Use list_chapters to see available chapters.`;
+  }
 }
