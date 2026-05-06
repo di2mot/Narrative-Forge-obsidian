@@ -4741,8 +4741,6 @@ var DashWidget = class extends import_view.WidgetType {
     span.className = "narrative-dash-widget";
     span.textContent = "\u2014 ";
     span.style.color = this.color;
-    span.style.userSelect = "none";
-    span.style.fontWeight = "bold";
     span.dataset["char"] = this.charName;
     span.title = this.charName;
     return span;
@@ -4892,11 +4890,11 @@ function buildNosDecorations(colorMap) {
         tooltipEl.textContent = `Character: ${name}`;
         tooltipEl.style.left = `${x2 + 12}px`;
         tooltipEl.style.top = `${y2 - 30}px`;
-        tooltipEl.style.display = "block";
+        tooltipEl.classList.add("is-visible");
       }
       hideTooltip() {
         if (tooltipEl) {
-          tooltipEl.style.display = "none";
+          tooltipEl.classList.remove("is-visible");
         }
       }
     },
@@ -20214,6 +20212,51 @@ var TOOL_DEFINITIONS = [
     name: "get_book_info",
     description: "Get general information about the book (chapter count). Call only when the author explicitly asks about indexing status.",
     input_schema: { type: "object", properties: {} }
+  },
+  {
+    name: "list_chapters",
+    description: "List every chapter file with its number, title, status, and approximate word count. Use this when the author asks 'what chapters do I have?' or to find the right filename for read_chapter.",
+    input_schema: { type: "object", properties: {} }
+  },
+  {
+    name: "list_characters",
+    description: "List every character that has dialogue in the book, ranked by how many lines they speak. Auto-detected from `[character: Name]` dialogue tags.",
+    input_schema: { type: "object", properties: {} }
+  },
+  {
+    name: "search_by_character",
+    description: "Find every scene featuring a given character (by exact name match against dialogue tags or scene metadata). Faster and more deterministic than search_semantic when the author names a specific character.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Character name as it appears in `[character: Name]` tags." },
+        n: { type: "integer", description: "Maximum number of scenes to return (default 20)." }
+      },
+      required: ["name"]
+    }
+  },
+  {
+    name: "search_by_location",
+    description: "Find every scene at a given location (case-insensitive substring match against scene `location::` metadata).",
+    input_schema: {
+      type: "object",
+      properties: {
+        location: { type: "string", description: "Location name or partial match." },
+        n: { type: "integer", description: "Maximum number of scenes to return (default 20)." }
+      },
+      required: ["location"]
+    }
+  },
+  {
+    name: "get_chapter",
+    description: "Read the full chapter file matching a given chapter number (from frontmatter `chapter:`). Returned with file-relative line numbers; suitable for editing with edit_scene.",
+    input_schema: {
+      type: "object",
+      properties: {
+        chapter_number: { type: "integer", description: "Chapter number from the file's frontmatter." }
+      },
+      required: ["chapter_number"]
+    }
   }
 ];
 var promptCache = /* @__PURE__ */ new Map();
@@ -20231,7 +20274,12 @@ async function buildSystemPrompt(app, bookDir) {
 
 ## Available tools
 - \`get_book_info\` \u2014 returns the number of indexed chapters. Call this if the author asks about indexing status.
+- \`list_chapters\` \u2014 lists every chapter file with number, title, status, and word count. Use this to discover filenames before \`read_chapter\`.
+- \`list_characters\` \u2014 lists every character with dialogue, ranked by line count.
 - \`search_semantic\` \u2014 semantic similarity search across all scenes. Use this to find relevant context before writing.
+- \`search_by_character\` \u2014 fast exact-name lookup of every scene featuring a given character.
+- \`search_by_location\` \u2014 fast lookup of every scene at a given location.
+- \`get_chapter\` \u2014 read a chapter by its frontmatter \`chapter:\` number (returns full content with line numbers).
 - \`read_scene\` \u2014 reads one scene from a chapter file (with file-relative line numbers).
 - \`read_chapter\` \u2014 reads the full chapter file with line numbers. Use this before editing.
 - \`edit_scene\` \u2014 replaces a range of lines in a chapter file (LSP-style, line+char coordinates).
@@ -20319,7 +20367,12 @@ var LOCAL_TOOL_NAMES = /* @__PURE__ */ new Set([
   "write_scene",
   "append_to_chapter",
   "search_semantic",
-  "get_book_info"
+  "get_book_info",
+  "list_chapters",
+  "list_characters",
+  "search_by_character",
+  "search_by_location",
+  "get_chapter"
 ]);
 async function executeTools(toolUses, localTools, api, bookDir) {
   const toolResultsContent = [];
@@ -48974,6 +49027,126 @@ ${addLineNumbers(scene.text, fileLineStart)}`;
 Formatted text:
 ${sceneBlock}`;
   }
+  /** All chapter `.md` files inside the book's `chapters/` folder, sorted by name. */
+  getChapterFiles() {
+    const d2 = this.vaultBookDir;
+    const folder = d2 ? `${d2}/chapters` : "chapters";
+    return this.app.vault.getFiles().filter((f2) => f2.path.startsWith(folder + "/") && f2.extension === "md").sort((a2, b2) => a2.name.localeCompare(b2.name));
+  }
+  async list_chapters(_args) {
+    const files = this.getChapterFiles();
+    if (files.length === 0)
+      return "No chapters found in chapters/.";
+    const rows = [];
+    for (const file of files) {
+      const content = await this.app.vault.read(file);
+      const chapter = parseChapter(content, file.name);
+      const number = chapter?.number ?? 0;
+      const title = chapter?.title ?? file.basename;
+      const status = chapter?.status ?? "";
+      const wordCount = content.replace(/^---[\s\S]*?\n---\n/, "").trim().split(/\s+/).filter(Boolean).length;
+      rows.push(`- ${file.name} \u2014 chapter ${number}: ${title}${status ? ` (${status})` : ""} \u2014 ~${wordCount} words`);
+    }
+    return `Chapters (${files.length}):
+${rows.join("\n")}`;
+  }
+  async list_characters(_args) {
+    const files = this.getChapterFiles();
+    const counts = /* @__PURE__ */ new Map();
+    for (const file of files) {
+      const content = await this.app.vault.read(file);
+      for (const m2 of content.matchAll(/^\[character:\s*([^\]]+)\]/gim)) {
+        const name = m2[1].trim();
+        counts.set(name, (counts.get(name) ?? 0) + 1);
+      }
+    }
+    if (counts.size === 0) {
+      return "No characters detected. Characters are auto-detected from `[character: Name] \u2014 \u2026` dialogue lines.";
+    }
+    const sorted = [...counts.entries()].sort((a2, b2) => b2[1] - a2[1]);
+    return `Characters (${sorted.length}):
+${sorted.map(([n2, c3]) => `- ${n2} \u2014 ${c3} dialogue line${c3 === 1 ? "" : "s"}`).join("\n")}`;
+  }
+  async search_by_character(args) {
+    if (!args.name?.trim())
+      return "Provide a character name.";
+    const target = args.name.trim().toLowerCase();
+    const limit2 = Math.max(1, Math.min(50, args.n ?? 20));
+    const files = this.getChapterFiles();
+    const hits = [];
+    for (const file of files) {
+      if (hits.length >= limit2)
+        break;
+      const content = await this.app.vault.read(file);
+      const chapter = parseChapter(content, file.name);
+      if (!chapter)
+        continue;
+      for (let i2 = 0; i2 < chapter.scenes.length && hits.length < limit2; i2++) {
+        const scene = chapter.scenes[i2];
+        const inDialogue = scene.dialogue.some((d2) => d2.character.toLowerCase() === target);
+        const inMeta = scene.characters.some((c3) => c3.toLowerCase() === target);
+        if (inDialogue || inMeta) {
+          const preview = scene.text.replace(/\s+/g, " ").slice(0, 160);
+          hits.push(`- ${file.name} scene ${i2} (${scene.location || "\u2014"} / ${scene.timeline || "\u2014"}): ${preview}\u2026`);
+        }
+      }
+    }
+    if (hits.length === 0)
+      return `No scenes found featuring "${args.name}".`;
+    return `Scenes featuring "${args.name}" (${hits.length}):
+${hits.join("\n")}`;
+  }
+  async search_by_location(args) {
+    if (!args.location?.trim())
+      return "Provide a location.";
+    const target = args.location.trim().toLowerCase();
+    const limit2 = Math.max(1, Math.min(50, args.n ?? 20));
+    const files = this.getChapterFiles();
+    const hits = [];
+    for (const file of files) {
+      if (hits.length >= limit2)
+        break;
+      const content = await this.app.vault.read(file);
+      const chapter = parseChapter(content, file.name);
+      if (!chapter)
+        continue;
+      for (let i2 = 0; i2 < chapter.scenes.length && hits.length < limit2; i2++) {
+        const scene = chapter.scenes[i2];
+        if (scene.location.toLowerCase().includes(target)) {
+          const preview = scene.text.replace(/\s+/g, " ").slice(0, 160);
+          hits.push(`- ${file.name} scene ${i2} (${scene.location} / ${scene.timeline || "\u2014"}): ${preview}\u2026`);
+        }
+      }
+    }
+    if (hits.length === 0)
+      return `No scenes found at "${args.location}".`;
+    return `Scenes at "${args.location}" (${hits.length}):
+${hits.join("\n")}`;
+  }
+  async get_chapter(args) {
+    const target = Number(args.chapter_number);
+    if (!Number.isFinite(target))
+      return "Provide a numeric chapter_number.";
+    const files = this.getChapterFiles();
+    for (const file of files) {
+      const content = await this.app.vault.read(file);
+      const chapter = parseChapter(content, file.name);
+      if (chapter && chapter.number === target) {
+        const MAX_CHARS = 8e3;
+        if (content.length > MAX_CHARS) {
+          const cutoff = content.lastIndexOf("\n", MAX_CHARS);
+          const truncated = content.slice(0, cutoff > 0 ? cutoff : MAX_CHARS);
+          return `[Chapter ${target} \u2014 ${file.name}]
+${addLineNumbers(truncated)}
+
+[NOTE: truncated; use read_scene with scene_index for specific scenes.]`;
+        }
+        return `[Chapter ${target} \u2014 ${file.name}]
+${addLineNumbers(content)}`;
+      }
+    }
+    return `No chapter with number ${target} found. Use list_chapters to see available chapters.`;
+  }
 };
 
 // src/chat.ts
@@ -49224,7 +49397,7 @@ Alternative providers with keys configured: ${alternatives.join(", ")}. Switch i
       this.isStreaming = false;
       const indicator = assistantEl.querySelector(".narrative-stream-indicator");
       if (indicator)
-        indicator.style.display = "none";
+        indicator.classList.add("is-hidden");
       this.sendBtn.disabled = false;
       this.sendBtn.textContent = "Send";
       this.scrollToBottom();
@@ -49549,7 +49722,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
     new import_obsidian8.Setting(containerEl).setName("About").setHeading();
     const infoDiv = containerEl.createEl("div", { cls: "narrative-settings-info" });
     infoDiv.createEl("p", {
-      text: "Narrative Forge v0.6.0 \u2014 AI-powered writing assistant for fiction authors."
+      text: "Narrative Forge v0.7.0 \u2014 AI-powered writing assistant for fiction authors."
     });
     infoDiv.createEl("p", {
       text: "Start the backend with: uvicorn narrative_os.server:app --reload",
@@ -49706,11 +49879,7 @@ var BookManager = class {
       });
       return;
     }
-    const content = await vault.read(existing);
-    const updated = this.addToAppearsIn(content, chapterLink, type);
-    if (updated !== content) {
-      await vault.modify(existing, updated);
-    }
+    await vault.process(existing, (data) => this.addToAppearsIn(data, chapterLink, type));
   }
   buildNoteContent(type, appearsIn) {
     const list = appearsIn.map((l2) => `  - "${l2}"`).join("\n");
@@ -50072,7 +50241,6 @@ var WritingSession = class {
     this.plugin = plugin;
     const item = plugin.addStatusBarItem();
     item.addClass("narrative-session-bar");
-    item.style.cursor = "pointer";
     this.statusEl = item;
     this.renderIdle();
     item.addEventListener("click", () => this.openModal());
