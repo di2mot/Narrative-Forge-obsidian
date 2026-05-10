@@ -10,8 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from .agent import get_provider, run_agent_turn
-from .importer import BookImporter
-from . import search as search_mod
+from .tools import call_tool
 
 BOOK_DIR = Path(os.environ.get("NOS_BOOK_DIR", os.getcwd()))
 LANGUAGE = os.environ.get("NOS_LANGUAGE", "en")
@@ -22,16 +21,14 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.get("/api/health")
 def health():
-    try:
-        chapters = search_mod.list_chapters(BOOK_DIR)
-        characters = search_mod.list_characters(BOOK_DIR)
-    except Exception:
-        chapters, characters = [], []
+    # Use proxied get_book_info to determine status
+    info = call_tool("get_book_info", {}, book_dir=BOOK_DIR)
+    is_ok = "Failed to contact Obsidian" not in info
+    
     return {
-        "status": "ok",
+        "status": "ok" if is_ok else "error",
         "book_dir": str(BOOK_DIR),
-        "chapters": len(chapters),
-        "characters": len(characters),
+        "info": info,
         "provider": get_provider(),
     }
 
@@ -39,9 +36,8 @@ def health():
 @app.post("/api/import")
 def import_book(force: bool = False, book_dir: str = "", language: str = ""):
     bd = Path(book_dir) if book_dir else BOOK_DIR
-    lang = language or os.environ.get("NOS_LANGUAGE", LANGUAGE)
-    importer = BookImporter(bd, language=lang)
-    return importer.import_book(force=force)
+    # Proxy to reimport_book tool
+    return {"result": call_tool("reimport_book", {}, book_dir=bd)}
 
 
 @app.post("/api/chat")

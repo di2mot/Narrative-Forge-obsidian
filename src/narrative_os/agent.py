@@ -244,22 +244,23 @@ async def _run_api_turn(
 def _build_cli_prompt(messages: list[dict[str, Any]], db=None, book_dir: str | None = None) -> str:
     """Build a single prompt for claude CLI from messages + book context."""
     from pathlib import Path
-    from . import search as search_mod
+    from .tools import call_tool
 
     book_dir = Path(os.path.abspath(book_dir or os.environ.get("NOS_BOOK_DIR", ".")))
     system_prompt = _build_system_prompt(book_dir)
     parts = [system_prompt, ""]
+    
     try:
-        chapters = search_mod.list_chapters(book_dir)
-        if chapters:
+        # Use proxy tools to get book context from Obsidian
+        chapters_str = call_tool("list_chapters", {}, book_dir=book_dir)
+        if chapters_str and not chapters_str.startswith("Error"):
             parts.append("## Book structure")
-            for ch in chapters:
-                parts.append(f"- Ch.{ch['chapter']}: {ch['title']} ({ch.get('filename', '')})")
+            parts.append(chapters_str)
             parts.append("")
 
-        characters = search_mod.list_characters(book_dir)
-        if characters:
-            parts.append(f"## Characters: {', '.join(characters)}")
+        chars_str = call_tool("list_characters", {}, book_dir=book_dir)
+        if chars_str and not chars_str.startswith("Error"):
+            parts.append(f"## Characters: {chars_str}")
             parts.append("")
     except Exception:
         pass

@@ -171,146 +171,36 @@ def _resolve_file(BD: Path, filename: str) -> Path | None:
 
 
 def _dispatch(name: str, inputs: dict, book_dir: Path | None = None) -> str:
-    from . import search as search_mod
-
+    """Proxy all tool calls to the Obsidian plugin's local server (port 18000).
+    
+    This ensures that Obsidian (Orama) is the single source of truth for 
+    indexing and search, and that all file operations use Obsidian's Vault API.
+    """
+    import requests
     BD = book_dir if book_dir is not None else BOOK_DIR
-
-    if name == "search_semantic":
-        results = search_mod.search_semantic(BD, inputs["query"], n=inputs.get("n", 5))
-        if not results:
-            return "No results found."
-        lines = []
-        for r in results:
-            m = r["metadata"]
-            chunk_info = ""
-            if m.get("chunk_total", 1) > 1:
-                chunk_info = f" [chunk {m.get('chunk_index', 0)+1}/{m.get('chunk_total')}]"
-            lines.append(
-                f"[Ch.{m.get('chapter')} -- {m.get('location', '?')} -- {m.get('timeline', '')}]{chunk_info}\n"
-                f"Score: {r['score']:.2f}\n{r['text'][:500]}\n"
-                f"→ To read full scene: read_scene(filename='{m.get('filename', '')}', scene_index={m.get('scene_index', 0)})"
-            )
-        return "\n\n---\n\n".join(lines)
-
-    elif name == "search_by_character":
-        results = search_mod.search_by_character(BD, inputs["name"], n=inputs.get("n", 20))
-        if not results:
-            return f"No scenes found with character '{inputs['name']}'."
-        lines = []
-        for r in results:
-            m = r["metadata"]
-            lines.append(f"[Ch.{m.get('chapter')} -- {m.get('location', '?')}]\n{r['text'][:400]}")
-        return "\n\n---\n\n".join(lines)
-
-    elif name == "search_by_location":
-        results = search_mod.search_by_location(BD, inputs["location"], n=inputs.get("n", 20))
-        if not results:
-            return f"No scenes found at location '{inputs['location']}'."
-        lines = []
-        for r in results:
-            m = r["metadata"]
-            lines.append(f"[Ch.{m.get('chapter')} -- {m.get('timeline', '?')}]\n{r['text'][:400]}")
-        return "\n\n---\n\n".join(lines)
-
-    elif name == "get_chapter":
-        results = search_mod.get_chapter_scenes(BD, inputs["chapter_number"])
-        if not results:
-            return f"Chapter {inputs['chapter_number']} not found or not indexed."
-        lines = []
-        for r in results:
-            m = r["metadata"]
-            lines.append(f"[Scene {m.get('scene_index', 0)} -- {m.get('location', '?')} -- {m.get('timeline', '')}]\n{r['text']}")
-        return "\n\n---\n\n".join(lines)
-
-    elif name == "list_chapters":
-        chapters = search_mod.list_chapters(BD)
-        if not chapters:
-            return "No chapters indexed. Run import first."
-        return "\n".join(f"Ch.{c['chapter']}: {c['title']} ({c['filename']})" for c in chapters)
-
-    elif name == "list_characters":
-        chars = search_mod.list_characters(BD)
-        if not chars:
-            return "No characters found. Run import first."
-        return ", ".join(chars)
-
-    elif name == "get_book_info":
-        chapters = search_mod.list_chapters(BD)
-        chars = search_mod.list_characters(BD)
-        lang = os.environ.get("NOS_LANGUAGE", "en")
-        if not chapters:
-            return (
-                f"Book directory: {BD}\n"
-                f"No chapters indexed yet. The author needs to click 'Import' in the Narrative Forge sidebar "
-                f"to index the book into the vector database before search and read tools will work."
-            )
-        return (
-            f"Book directory: {BD}\n"
-            f"Language: {lang}\n"
-            f"Chapters indexed: {len(chapters)}\n"
-            f"Characters found: {len(chars)}\n"
-            f"Characters: {', '.join(chars[:20])}"
+    
+    try:
+        res = requests.post(
+            "http://localhost:18000/execute_tool",
+            json={"name": name, "input": inputs, "book_dir": str(BD)},
+            timeout=30
         )
-
-    elif name == "read_scene":
-        from .parser import parse_chapter
-        path = _resolve_file(BD, inputs["filename"])
-        if path is None:
-            return f"File not found: {inputs['filename']}. Available folders: chapters/, notes/"
-        ch = parse_chapter(path)
-        if ch is None:
-            return "Failed to parse file."
-        idx = inputs["scene_index"]
-        if idx >= len(ch.scenes):
-            return f"Scene {idx} not found. Chapter has {len(ch.scenes)} scenes."
-        scene = ch.scenes[idx]
-        return f"[Scene {idx} — {scene.location} — {scene.timeline}]\n{scene.text}"
-
-    elif name == "read_chapter":
-        path = _resolve_file(BD, inputs["filename"])
-        if path is None:
-            return f"File not found: {inputs['filename']}. Available folders: chapters/, notes/"
-        return path.read_text(encoding="utf-8")
-
-    elif name in ("edit_scene", "append_to_chapter", "write_scene"):
-        import requests
-        try:
-            res = requests.post(
-                "http://localhost:18000/execute_tool",
-                json={"name": name, "input": inputs, "book_dir": str(BD)},
-                timeout=10
-            )
-            data = res.json()
-            if data.get("status") == "ok":
-                # Re-index the changed file
-                path = _resolve_file(BD, inputs["filename"])
-                if path:
-                    try:
-                        from .importer import BookImporter
-                        importer = BookImporter(BD)
-                        importer._import_file(path)
-                    except Exception:
-                        pass
-                return data.get("result", "Done.")
-            else:
-                return f"Error from Obsidian: {data.get('message', 'Unknown error')}"
-        except Exception as e:
-            return f"Failed to contact Obsidian plugin local server on port 18000. Is Obsidian running and Narrative Forge plugin enabled? Error: {e}"
-
-    elif name == "reimport_book":
-        from .importer import BookImporter
-        lang = os.environ.get("NOS_LANGUAGE", "en")
-        importer = BookImporter(BD, language=lang)
-        result = importer.import_book(force=False)
+        res.raise_for_status()
+        data = res.json()
+        
+        if data.get("status") == "ok":
+            return data.get("result", "Done.")
+        else:
+            return f"Error from Obsidian: {data.get('message', 'Unknown error')}"
+            
+    except requests.exceptions.ConnectionError:
         return (
-            f"Re-index complete.\n"
-            f"Imported: {result['chapters_imported']} files\n"
-            f"Skipped (unchanged): {result['chapters_skipped']} files\n"
-            f"Characters found: {result['characters_found']}\n"
-            + (f"Errors: {result['errors']}" if result['errors'] else "No errors.")
+            f"Failed to contact Obsidian plugin local server on port 18000.\n"
+            f"Is Obsidian running and the Narrative Forge plugin enabled?\n"
+            f"Note: The Python bridge requires Obsidian to be open to access the book's index and files."
         )
-
-    return f"Unknown tool: {name}"
+    except Exception as e:
+        return f"Bridge error calling {name}: {e}"
 
 
 def call_tool(name: str, inputs: dict, book_dir=None) -> str:
