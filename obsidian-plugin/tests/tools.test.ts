@@ -47,13 +47,19 @@ describe('applyLspEdit', () => {
   });
 
   it('returns error for line number beyond file length', () => {
-    expect(applyLspEdit(content, 5, 0, 5, 0, 'x'))
-      .toEqual({ error: 'Invalid range: file has 4 lines.' });
+    const r = applyLspEdit(content, 6, 0, 6, 0, 'x');
+    expect(r).toEqual(expect.objectContaining({ error: expect.stringMatching(/Invalid range: file has 4 lines/) }));
   });
 
   it('returns error when end_line < start_line', () => {
-    expect(applyLspEdit(content, 3, 0, 2, 0, 'x'))
-      .toEqual({ error: 'Invalid range: file has 4 lines.' });
+    const r = applyLspEdit(content, 3, 0, 2, 0, 'x');
+    expect(r).toEqual(expect.objectContaining({ error: expect.stringMatching(/Invalid range: file has 4 lines/) }));
+  });
+
+  it('allows end_line = lineCount + 1 to mean "after the last line" (LSP exclusive end)', () => {
+    // 4-line content (3 lines + trailing empty): inserting at the very end is valid.
+    const out = applyLspEdit(content, 4, 0, 4, 0, 'extra\n');
+    expect(typeof out).toBe('string');
   });
 
   it('replaces lines N..M when end_line=M+1, end_char=0 (LSP exclusive end)', () => {
@@ -70,7 +76,7 @@ describe('applyLspEdit', () => {
     const newText = 'new para 1\nnew para 2\nЧас спати.\n';
     const out = applyLspEdit(file, 2, 0, 5, 0, newText);
     expect(out).toBe('header\nnew para 1\nnew para 2\nЧас спати.\n');
-    expect((out.match(/Час спати/g) || []).length).toBe(1);
+    expect((typeof out === 'string' ? out.match(/Час спати/g) : null)?.length ?? 0).toBe(1);
   });
 
   it('documents the model-misuse case that produces duplication', () => {
@@ -83,6 +89,6 @@ describe('applyLspEdit', () => {
     const out = applyLspEdit(file, 2, 0, 3, 0, newText);
     // Line 3 ('Час спати.') was preserved per LSP semantics; new_text also
     // ended with that line → duplication. Demonstrated, not desired.
-    expect((out.match(/Час спати/g) || []).length).toBe(2);
+    expect((typeof out === 'string' ? out.match(/Час спати/g) : null)?.length ?? 0).toBe(2);
   });
 });

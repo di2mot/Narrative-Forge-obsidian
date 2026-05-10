@@ -1,4 +1,4 @@
-import { create, insert, remove, search, Orama } from "@orama/orama";
+import { create, insert, remove, search } from "@orama/orama";
 import { persist, restore } from "@orama/plugin-data-persistence";
 import { pipeline, env } from "@huggingface/transformers";
 import type { App } from "obsidian";
@@ -20,30 +20,40 @@ export interface SceneMetadata {
   chapter_title: string;
   scene_index: number;
   location: string;
-  characters: string;
+  characters: string[];
   filename: string;
 }
 
 export class VectorDatabase {
-  private db: Orama | null = null;
+  private db: any = null;
   private embedder: any = null;
   private currentModelName: string = MULTILINGUAL_MODEL;
   private initPromise: Promise<void> | null = null;
 
   async init(modelName?: string): Promise<void> {
-    // Serialize concurrent callers so the 80–150 MB WASM model is only loaded once.
+    const resolved = modelName ? resolveEmbeddingModel(modelName) : this.currentModelName;
+    
+    if (resolved !== this.currentModelName) {
+      if (this.initPromise) await this.initPromise;
+      this.currentModelName = resolved;
+      this.db = null;
+      this.embedder = null;
+      this.initPromise = null;
+    }
+
     if (this.initPromise) return this.initPromise;
-    this.initPromise = this._doInit(modelName).finally(() => { this.initPromise = null; });
+    
+    this.initPromise = this._doInit(resolved).finally(() => {
+      // We keep the promise if it's successful so subsequent calls are fast,
+      // but we need to be able to clear it on model switch.
+      // Actually, it's safer to just clear it and rely on this.db check in _doInit.
+      this.initPromise = null;
+    });
     return this.initPromise;
   }
 
   private async _doInit(modelName?: string): Promise<void> {
-    const resolved = modelName ? resolveEmbeddingModel(modelName) : this.currentModelName;
-    if (resolved !== this.currentModelName) {
-      this.currentModelName = resolved;
-      this.embedder = null; // model changed — reload
-    }
-
+    const targetModel = modelName || this.currentModelName;
     if (!this.db) {
       this.db = await create({
         schema: {
@@ -54,10 +64,10 @@ export class VectorDatabase {
           chapter_title: "string",
           scene_index: "number",
           location: "string",
-          characters: "string",
+          characters: "string[]",
           filename: "string"
         }
-      });
+      }) as any;
     }
 
     if (!this.embedder) {
@@ -65,38 +75,33 @@ export class VectorDatabase {
       if (onnxBackend) {
         if (!onnxBackend.wasm) onnxBackend.wasm = {};
         onnxBackend.wasm.numThreads = 1;
-        // __dirname in Electron renderer points into the asar archive, not the plugin dir.
-        // Use explicit CDN paths so onnxruntime-web always finds the WASM files.
-        if (!onnxBackend.wasm.wasmPaths) {
-          onnxBackend.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/";
-        }
+        // CDN path MUST match the @huggingface/transformers version pinned in
+        // package.json — the JS glue and the .wasm binary are coupled.
+        onnxBackend.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/";
       }
-      // ort-wasm-simd-threaded.jsep.mjs does `await import("worker_threads")` when
-      // process.versions.node is a string. The Electron renderer has node integration,
-      // so this fires — but the .mjs is fetched as a remote ES module, and the browser
-      // loader can't resolve bare Node specifiers. Hide process.versions.node for the
-      // duration of model load so the glue takes the browser path instead.
+
+      // Hide node version to force browser-friendly WASM loading in Electron
       const proc = (globalThis as any).process;
       const origNodeVersion = proc?.versions?.node;
       if (proc?.versions && origNodeVersion !== undefined) {
-        try { delete proc.versions.node; } catch { proc.versions.node = undefined; }
+        try { proc.versions.node = undefined; } catch { }
       }
+
       try {
-        this.embedder = await pipeline("feature-extraction", this.currentModelName, {
+        this.embedder = await pipeline("feature-extraction", targetModel, {
           device: "wasm",
           dtype: "q8",
-          progress_callback: (_info: any) => {}
         });
       } finally {
         if (proc?.versions && origNodeVersion !== undefined) {
-          proc.versions.node = origNodeVersion;
+          try { proc.versions.node = origNodeVersion; } catch { }
         }
       }
     }
   }
 
   async embed(text: string): Promise<number[]> {
-    if (!this.embedder || !this.db) await this.init();
+    if (!this.embedder) await this.init();
     const output = await this.embedder(text, { pooling: "mean", normalize: true });
     return Array.from(output.data);
   }
@@ -120,14 +125,17 @@ export class VectorDatabase {
   async searchSemantic(query: string, limit: number = 5) {
     if (!this.db) await this.init();
     const queryEmbedding = await this.embed(query);
+    // Pure-vector search. Multilingual MiniLM cosine scores typically run lower
+    // than English-only — keep the threshold permissive (0.25) so non-English
+    // queries don't return zero hits.
     const results = await search(this.db!, {
       mode: "vector",
       vector: {
         value: queryEmbedding,
         property: "embedding"
       },
-      limit,
-      similarity: 0.2
+      similarity: 0.25,
+      limit
     });
     return results.hits.map(hit => ({
       id: hit.document.id,
@@ -142,6 +150,59 @@ export class VectorDatabase {
       },
       score: hit.score
     }));
+  }
+
+  async searchByMetadata(where: Record<string, any>, limit: number = 20) {
+    if (!this.db) await this.init();
+    const results = await search(this.db!, {
+      where,
+      limit,
+    });
+    return results.hits.map(hit => ({
+      id: hit.document.id,
+      text: hit.document.text,
+      metadata: {
+        chapter: hit.document.chapter,
+        chapter_title: hit.document.chapter_title,
+        scene_index: hit.document.scene_index,
+        location: hit.document.location,
+        characters: hit.document.characters,
+        filename: hit.document.filename
+      },
+      score: hit.score
+    }));
+  }
+
+  async listChapters() {
+    if (!this.db) return [];
+    const results = await search(this.db!, { term: "", limit: 5000 });
+    const chapters = new Map<number, { chapter: number; title: string; filename: string }>();
+    for (const hit of results.hits) {
+      const d = hit.document;
+      if (!chapters.has(d.chapter)) {
+        chapters.set(d.chapter, {
+          chapter: d.chapter,
+          title: d.chapter_title,
+          filename: d.filename
+        });
+      }
+    }
+    return Array.from(chapters.values()).sort((a, b) => a.chapter - b.chapter);
+  }
+
+  async listCharacters() {
+    if (!this.db) return [];
+    const results = await search(this.db!, { term: "", limit: 5000 });
+    const chars = new Set<string>();
+    for (const hit of results.hits) {
+      const cArr = hit.document.characters;
+      if (Array.isArray(cArr)) {
+        cArr.forEach((s: string) => {
+          if (s) chars.add(s.trim());
+        });
+      }
+    }
+    return Array.from(chars).sort();
   }
 
   async clear(modelName?: string) {
@@ -187,7 +248,7 @@ export class VectorDatabase {
     if (await app.vault.adapter.exists(dbPath)) {
       try {
         const serialized = await app.vault.adapter.read(dbPath);
-        this.db = await restore("json", serialized) as unknown as Orama;
+        this.db = await restore("json", serialized) as any;
         // Load embedder without recreating the restored DB — reuse _doInit's WASM setup
         if (!this.embedder) {
           await this._doInit();

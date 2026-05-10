@@ -39,10 +39,15 @@ export function stripWikilinks(text: string): string {
 export function parseWikilinkList(value: unknown): string[] {
   if (!value) return [];
   if (Array.isArray(value)) {
-    return value.map((v) => stripWikilinks(String(v)));
+    return value.map((v) => stripWikilinks(String(v))).filter(Boolean);
   }
   if (typeof value === "string") {
-    return [stripWikilinks(value)];
+    // YAML scalar that contains a comma-separated list — e.g. "Rey, Freya, [[Sam]]"
+    if (value.includes(",")) {
+      return value.split(",").map((s) => stripWikilinks(s)).filter(Boolean);
+    }
+    const stripped = stripWikilinks(value);
+    return stripped ? [stripped] : [];
   }
   return [];
 }
@@ -99,6 +104,9 @@ export function parseChapter(rawText: string, filename: string): Chapter | null 
 
   let currentLocation = chapter.location;
   let currentTimeline = chapter.timeline;
+  // Carried-forward character list — frontmatter seeds it; scene-level
+  // `characters::` Dataview metadata replaces it for that scene and onwards.
+  let currentCharacters: string[] = [...chapter.characters];
 
   for (const rawScene of rawScenes) {
     const rawSceneText = rawScene.text.trim();
@@ -110,12 +118,12 @@ export function parseChapter(rawText: string, filename: string): Chapter | null 
       line_start: rawScene.start,
       text: "",
       dialogue: [],
-      characters: [],
+      characters: [...currentCharacters],
     };
 
     const lines = rawScene.text.split("\n");
 
-    // Extract dataview metadata
+    // Extract Dataview-style scene metadata (`location::`, `timeline::`, `characters::`)
     for (let i = 0; i < lines.length; i++) {
       const trimmed = lines[i].trim();
       if (!trimmed) continue; // skip blank lines before/between metadata
@@ -129,13 +137,20 @@ export function parseChapter(rawText: string, filename: string): Chapter | null 
         } else if (key === "timeline") {
           scene.timeline = stripWikilinks(val);
           currentTimeline = scene.timeline;
+        } else if (key === "characters" || key === "character") {
+          // Comma-separated list with optional wikilinks: "Rey, Freya, [[Sam]]"
+          const parsed = parseWikilinkList(val);
+          if (parsed.length > 0) {
+            scene.characters = [...parsed];
+            currentCharacters = parsed;
+          }
         }
       } else {
         break; // first non-blank non-Dataview line ends metadata block
       }
     }
 
-    // Extract dialogue and characters
+    // Extract dialogue and merge any newly-named characters (dedup against existing).
     for (let j = 0; j < lines.length; j++) {
       const line = lines[j];
       const dm = line.trim().match(DIALOGUE_RE);

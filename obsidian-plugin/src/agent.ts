@@ -613,11 +613,17 @@ export class OpenAIAgent implements BaseAgent {
 
       const toolUsesList = Object.values(toolUsesMap);
       for (const tu of toolUsesList) {
-        tu.input = JSON.parse(tu.input || "{}");
-        (assistantMessage.content as any[]).push(tu);
-        yield { type: "tool_use", data: { name: tu.name, input: tu.input } };
+        try {
+          tu.input = JSON.parse(tu.input || "{}");
+          (assistantMessage.content as any[]).push(tu);
+          yield { type: "tool_use", data: { name: tu.name, input: tu.input } };
+        } catch (e) {
+          console.error(`[NOS OpenAIAgent] Failed to parse tool input for ${tu.name}:`, tu.input);
+          // If we can't parse it, we don't push it to history to avoid poisoning the next turn
+          yield { type: "text_delta", data: { text: `\n[Error: AI generated invalid tool parameters for ${tu.name}. Try a stronger model.]\n` } };
+        }
       }
-      totalToolCalls += toolUsesList.length;
+      totalToolCalls += (assistantMessage.content as any[]).filter((c: any) => c.type === "tool_use").length;
 
       currentMessages.push(assistantMessage);
 
@@ -807,6 +813,7 @@ export class GeminiAgent implements BaseAgent {
               input: call.args
             };
             toolUses.push(tu as any);
+            // Gemini provides args as a parsed object already
             yield { type: "tool_use", data: { name: call.name, input: call.args } };
           }
         }

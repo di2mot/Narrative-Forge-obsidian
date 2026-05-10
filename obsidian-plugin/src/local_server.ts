@@ -48,12 +48,24 @@ export class LocalServer {
               result = await executor.append_to_chapter(input);
             } else if (toolName === "search_semantic") {
               result = await executor.search_semantic(input);
+            } else if (toolName === "search_by_character") {
+              result = await executor.search_by_character(input);
+            } else if (toolName === "search_by_location") {
+              result = await executor.search_by_location(input);
+            } else if (toolName === "get_chapter") {
+              result = await executor.get_chapter(input);
+            } else if (toolName === "list_chapters") {
+              result = await executor.list_chapters(input);
+            } else if (toolName === "list_characters") {
+              result = await executor.list_characters(input);
             } else if (toolName === "read_scene") {
               result = await executor.read_scene(input as any);
             } else if (toolName === "read_chapter") {
               result = await executor.read_chapter(input as any);
             } else if (toolName === "get_book_info") {
               result = await executor.get_book_info(input);
+            } else if (toolName === "reimport_book") {
+              result = await executor.reimport_book(input);
             } else {
               result = `Unknown or unsupported local tool: ${toolName}`;
             }

@@ -8,6 +8,9 @@ import { TFile, FileSystemAdapter } from "../tests/__mocks__/obsidian";
  * - vault.getFiles() — returns the registered TFile mocks
  * - vault.read(file) — returns content keyed by file.path
  * - vault.getAbstractFileByPath — returns the matching TFile
+ *
+ * The mock vectorDb (tests/__mocks__/database.ts) returns empty for every
+ * method, so the hybrid tools always fall through to the file-scan branch.
  */
 function makeApp(files: Record<string, string>): any {
   const tfiles: TFile[] = Object.entries(files).map(([path, _content]) => {
@@ -66,18 +69,29 @@ const FILES = {
     "",
     "[character: Freya] — I can fix this.",
   ].join("\n"),
+  // Pure-narrative chapter — no dialogue tags, but characters in frontmatter.
+  // The user-reported bug: list_characters used to miss Trond and Sam here.
+  "chapters/04-prologue.md": [
+    "---",
+    "chapter: 4",
+    "title: Prologue",
+    "characters: [Trond, Sam]",
+    "---",
+    "Trond and Sam stood at the dock. Neither said a word.",
+  ].join("\n"),
   "notes/world.md": "Some world notes — should NOT show up in chapter listings.",
 };
 
-describe("LocalToolExecutor — list_chapters", () => {
+describe("LocalToolExecutor — list_chapters (hybrid → file scan)", () => {
   const tools = new LocalToolExecutor(makeApp(FILES), "");
 
   it("returns one entry per chapter file with number, title, status", async () => {
     const out = await tools.list_chapters({});
-    expect(out).toContain("Chapters (3)");
+    expect(out).toContain("file scan");
     expect(out).toContain("01-arrival.md — chapter 1: Arrival (draft)");
     expect(out).toContain("02-corridor.md — chapter 2: Corridor (revision)");
     expect(out).toContain("03-engine.md — chapter 3: Engine Room");
+    expect(out).toContain("04-prologue.md — chapter 4: Prologue");
   });
 
   it("ignores files outside the chapters/ folder", async () => {
@@ -86,21 +100,25 @@ describe("LocalToolExecutor — list_chapters", () => {
   });
 });
 
-describe("LocalToolExecutor — list_characters", () => {
+describe("LocalToolExecutor — list_characters (hybrid → file scan)", () => {
   const tools = new LocalToolExecutor(makeApp(FILES), "");
 
-  it("counts dialogue lines per character across all chapters", async () => {
+  it("includes characters from `[character: Name]` dialogue tags", async () => {
     const out = await tools.list_characters({});
-    // Rey: 1 in arrival + 2 in corridor = 3 lines
-    // Freya: 1 in arrival + 1 in engine = 2 lines
-    expect(out).toContain("Rey — 3 dialogue lines");
-    expect(out).toContain("Freya — 2 dialogue lines");
-    // Sorted by frequency: Rey before Freya
-    expect(out.indexOf("Rey")).toBeLessThan(out.indexOf("Freya"));
+    expect(out).toContain("Rey");
+    expect(out).toContain("Freya");
+  });
+
+  it("includes characters from frontmatter `characters: [Name1, Name2]` even when no dialogue tags exist", async () => {
+    const out = await tools.list_characters({});
+    // Bug fix: 04-prologue.md has no dialogue but lists Trond and Sam in
+    // frontmatter. They must show up.
+    expect(out).toContain("Trond");
+    expect(out).toContain("Sam");
   });
 });
 
-describe("LocalToolExecutor — search_by_character", () => {
+describe("LocalToolExecutor — search_by_character (hybrid → file scan)", () => {
   const tools = new LocalToolExecutor(makeApp(FILES), "");
 
   it("finds scenes containing the named character", async () => {
@@ -116,6 +134,11 @@ describe("LocalToolExecutor — search_by_character", () => {
     expect(out).toContain("03-engine.md");
   });
 
+  it("finds characters from frontmatter `characters:` even when no dialogue", async () => {
+    const out = await tools.search_by_character({ name: "Trond" });
+    expect(out).toContain("04-prologue.md");
+  });
+
   it("returns a not-found message when nobody matches", async () => {
     const out = await tools.search_by_character({ name: "Unknown" });
     expect(out).toMatch(/no scenes found/i);
@@ -127,7 +150,7 @@ describe("LocalToolExecutor — search_by_character", () => {
   });
 });
 
-describe("LocalToolExecutor — search_by_location", () => {
+describe("LocalToolExecutor — search_by_location (hybrid → file scan)", () => {
   const tools = new LocalToolExecutor(makeApp(FILES), "");
 
   it("matches by case-insensitive substring", async () => {
@@ -142,7 +165,7 @@ describe("LocalToolExecutor — search_by_location", () => {
   });
 });
 
-describe("LocalToolExecutor — get_chapter", () => {
+describe("LocalToolExecutor — get_chapter (hybrid → file scan)", () => {
   const tools = new LocalToolExecutor(makeApp(FILES), "");
 
   it("returns chapter content with line numbers when number matches frontmatter", async () => {
@@ -162,3 +185,7 @@ describe("LocalToolExecutor — get_chapter", () => {
     expect(out).toMatch(/provide a numeric/i);
   });
 });
+
+// Note: the DB-first branch of the hybrid tools is exercised end-to-end
+// inside Obsidian after a real import; here we only test the file-scan
+// fallback (mocked vectorDb returns empty so the fallback is taken).

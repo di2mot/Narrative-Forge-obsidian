@@ -137,7 +137,7 @@ export async function importBookLocally(
           chapter_title: chapter.title,
           scene_index: sceneIdx,
           location: scene.location,
-          characters: scene.characters.join(","),
+          characters: scene.characters,
           filename: chapter.filename
         });
         newChunkIds.push(id);

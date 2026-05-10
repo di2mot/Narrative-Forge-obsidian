@@ -95,6 +95,66 @@ describe('parseChapter', () => {
     expect(chap!.scenes[0].timeline).toBe('Year 1105');
   });
 
+  it('seeds scene.characters from frontmatter `characters:` even when no dialogue tags', () => {
+    const md = [
+      '---',
+      'chapter: 7',
+      'characters: [Rey, Freya, "[[Sam]]"]',
+      '---',
+      'Pure narrative scene with no dialogue.',
+    ].join('\n');
+
+    const chap = parseChapter(md, 'ch07.md');
+    expect(chap!.scenes[0].characters).toEqual(['Rey', 'Freya', 'Sam']);
+  });
+
+  it('parses comma-separated `characters:` scalar from frontmatter', () => {
+    const md = [
+      '---',
+      'chapter: 8',
+      'characters: Rey, Freya, Sam',
+      '---',
+      'Body.',
+    ].join('\n');
+
+    const chap = parseChapter(md, 'ch08.md');
+    expect(chap!.scenes[0].characters).toEqual(['Rey', 'Freya', 'Sam']);
+  });
+
+  it('overrides scene.characters from scene-level `characters::` Dataview metadata', () => {
+    const md = [
+      '---',
+      'chapter: 9',
+      'characters: [Rey, Freya]',
+      '---',
+      'First scene.',
+      '---',
+      'characters:: Sam, [[Trond]]',
+      'location:: Cave',
+      'Second scene body — no dialogue.',
+    ].join('\n');
+
+    const chap = parseChapter(md, 'ch09.md');
+    expect(chap!.scenes).toHaveLength(2);
+    expect(chap!.scenes[0].characters).toEqual(['Rey', 'Freya']);
+    expect(chap!.scenes[1].characters).toEqual(['Sam', 'Trond']);
+  });
+
+  it('merges dialogue characters into the seeded list without duplicates', () => {
+    const md = [
+      '---',
+      'chapter: 10',
+      'characters: [Rey]',
+      '---',
+      'Narration.',
+      '[character: Rey] — already in list',
+      '[character: Freya] — newly named',
+    ].join('\n');
+
+    const chap = parseChapter(md, 'ch10.md');
+    expect(chap!.scenes[0].characters).toEqual(['Rey', 'Freya']);
+  });
+
   it('overrides location/timeline from scene-level Dataview metadata', () => {
     const md = [
       '---',
