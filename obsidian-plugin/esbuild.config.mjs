@@ -60,6 +60,20 @@ const patchTransformers = {
         process.exit(1);
       }
 
+      // The `Se` loader does `import(cdnUrl)` to fetch the Emscripten .mjs glue
+      // from CDN.  That .mjs statically imports `worker_threads`, which fails in
+      // Obsidian's renderer (browser ESM context can't resolve Node.js built-ins).
+      // The identical Emscripten module is already bundled as `Ie` (the rd() lazy
+      // init).  Redirect Se to return the bundled module instead of fetching CDN.
+      const seNeedle = "Se=async e=>(await import(e)).default";
+      if (contents.includes(seNeedle)) {
+        contents = contents.replace(seNeedle, "Se=async e=>Ie");
+        console.log("[patch-transformers] Se CDN importer → bundled Ie (worker_threads fix)");
+      } else {
+        console.error("[patch-transformers] Se CDN importer needle not found — transformers bundle changed.");
+        process.exit(1);
+      }
+
       return { contents, loader: "js" };
     });
   },

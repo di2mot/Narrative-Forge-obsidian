@@ -30974,7 +30974,7 @@ var n = { "./node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep.wasm"
     }, Ce2 = (e3, t3) => `${t3 ?? "./"}${e3}`, $e2 = async (e3) => {
       let t3 = await (await fetch(e3, { credentials: "same-origin" })).blob();
       return URL.createObjectURL(t3);
-    }, Se2 = async (e3) => (await import(e3)).default, Fe2 = (he2(), V3(ue2)).default, Ee2 = async () => {
+    }, Se2 = async (e3) => Ie2, Fe2 = (he2(), V3(ue2)).default, Ee2 = async () => {
       if (!ve2)
         throw new Error("Failed to load proxy worker: cannot determine the script source URL.");
       if (ke2(ve2))
