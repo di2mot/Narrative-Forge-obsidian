@@ -20583,11 +20583,18 @@ var OpenAIAgent = class {
       }
       const toolUsesList = Object.values(toolUsesMap);
       for (const tu2 of toolUsesList) {
-        tu2.input = JSON.parse(tu2.input || "{}");
-        assistantMessage.content.push(tu2);
-        yield { type: "tool_use", data: { name: tu2.name, input: tu2.input } };
+        try {
+          tu2.input = JSON.parse(tu2.input || "{}");
+          assistantMessage.content.push(tu2);
+          yield { type: "tool_use", data: { name: tu2.name, input: tu2.input } };
+        } catch (e2) {
+          console.error(`[NOS OpenAIAgent] Failed to parse tool input for ${tu2.name}:`, tu2.input);
+          yield { type: "text_delta", data: { text: `
+[Error: AI generated invalid tool parameters for ${tu2.name}. Try a stronger model.]
+` } };
+        }
       }
-      totalToolCalls += toolUsesList.length;
+      totalToolCalls += assistantMessage.content.filter((c3) => c3.type === "tool_use").length;
       currentMessages.push(assistantMessage);
       if (toolUsesList.length === 0)
         break;
@@ -20797,10 +20804,14 @@ function parseWikilinkList(value) {
   if (!value)
     return [];
   if (Array.isArray(value)) {
-    return value.map((v3) => stripWikilinks(String(v3)));
+    return value.map((v3) => stripWikilinks(String(v3))).filter(Boolean);
   }
   if (typeof value === "string") {
-    return [stripWikilinks(value)];
+    if (value.includes(",")) {
+      return value.split(",").map((s2) => stripWikilinks(s2)).filter(Boolean);
+    }
+    const stripped = stripWikilinks(value);
+    return stripped ? [stripped] : [];
   }
   return [];
 }
@@ -20849,6 +20860,7 @@ function parseChapter(rawText, filename) {
   rawScenes.push({ text: currentBlock.join("\n"), start: currentStart });
   let currentLocation = chapter.location;
   let currentTimeline = chapter.timeline;
+  let currentCharacters = [...chapter.characters];
   for (const rawScene of rawScenes) {
     const rawSceneText = rawScene.text.trim();
     if (!rawSceneText)
@@ -20859,7 +20871,7 @@ function parseChapter(rawText, filename) {
       line_start: rawScene.start,
       text: "",
       dialogue: [],
-      characters: []
+      characters: [...currentCharacters]
     };
     const lines = rawScene.text.split("\n");
     for (let i2 = 0; i2 < lines.length; i2++) {
@@ -20876,6 +20888,12 @@ function parseChapter(rawText, filename) {
         } else if (key === "timeline") {
           scene.timeline = stripWikilinks(val);
           currentTimeline = scene.timeline;
+        } else if (key === "characters" || key === "character") {
+          const parsed = parseWikilinkList(val);
+          if (parsed.length > 0) {
+            scene.characters = [...parsed];
+            currentCharacters = parsed;
+          }
         }
       } else {
         break;
@@ -48635,19 +48653,24 @@ var VectorDatabase = class {
   currentModelName = MULTILINGUAL_MODEL;
   initPromise = null;
   async init(modelName) {
+    const resolved = modelName ? resolveEmbeddingModel(modelName) : this.currentModelName;
+    if (resolved !== this.currentModelName) {
+      if (this.initPromise)
+        await this.initPromise;
+      this.currentModelName = resolved;
+      this.db = null;
+      this.embedder = null;
+      this.initPromise = null;
+    }
     if (this.initPromise)
       return this.initPromise;
-    this.initPromise = this._doInit(modelName).finally(() => {
+    this.initPromise = this._doInit(resolved).finally(() => {
       this.initPromise = null;
     });
     return this.initPromise;
   }
   async _doInit(modelName) {
-    const resolved = modelName ? resolveEmbeddingModel(modelName) : this.currentModelName;
-    if (resolved !== this.currentModelName) {
-      this.currentModelName = resolved;
-      this.embedder = null;
-    }
+    const targetModel = modelName || this.currentModelName;
     if (!this.db) {
       this.db = await create5({
         schema: {
@@ -48658,7 +48681,7 @@ var VectorDatabase = class {
           chapter_title: "string",
           scene_index: "number",
           location: "string",
-          characters: "string",
+          characters: "string[]",
           filename: "string"
         }
       });
@@ -48669,35 +48692,33 @@ var VectorDatabase = class {
         if (!onnxBackend.wasm)
           onnxBackend.wasm = {};
         onnxBackend.wasm.numThreads = 1;
-        if (!onnxBackend.wasm.wasmPaths) {
-          onnxBackend.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/";
-        }
+        onnxBackend.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1/dist/";
       }
       const proc = globalThis.process;
       const origNodeVersion = proc?.versions?.node;
       if (proc?.versions && origNodeVersion !== void 0) {
         try {
-          delete proc.versions.node;
-        } catch {
           proc.versions.node = void 0;
+        } catch {
         }
       }
       try {
-        this.embedder = await Bh("feature-extraction", this.currentModelName, {
+        this.embedder = await Bh("feature-extraction", targetModel, {
           device: "wasm",
-          dtype: "q8",
-          progress_callback: (_info) => {
-          }
+          dtype: "q8"
         });
       } finally {
         if (proc?.versions && origNodeVersion !== void 0) {
-          proc.versions.node = origNodeVersion;
+          try {
+            proc.versions.node = origNodeVersion;
+          } catch {
+          }
         }
       }
     }
   }
   async embed(text) {
-    if (!this.embedder || !this.db)
+    if (!this.embedder)
       await this.init();
     const output = await this.embedder(text, { pooling: "mean", normalize: true });
     return Array.from(output.data);
@@ -48728,8 +48749,8 @@ var VectorDatabase = class {
         value: queryEmbedding,
         property: "embedding"
       },
-      limit: limit2,
-      similarity: 0.2
+      similarity: 0.25,
+      limit: limit2
     });
     return results.hits.map((hit) => ({
       id: hit.document.id,
@@ -48744,6 +48765,60 @@ var VectorDatabase = class {
       },
       score: hit.score
     }));
+  }
+  async searchByMetadata(where, limit2 = 20) {
+    if (!this.db)
+      await this.init();
+    const results = await search2(this.db, {
+      where,
+      limit: limit2
+    });
+    return results.hits.map((hit) => ({
+      id: hit.document.id,
+      text: hit.document.text,
+      metadata: {
+        chapter: hit.document.chapter,
+        chapter_title: hit.document.chapter_title,
+        scene_index: hit.document.scene_index,
+        location: hit.document.location,
+        characters: hit.document.characters,
+        filename: hit.document.filename
+      },
+      score: hit.score
+    }));
+  }
+  async listChapters() {
+    if (!this.db)
+      return [];
+    const results = await search2(this.db, { term: "", limit: 5e3 });
+    const chapters = /* @__PURE__ */ new Map();
+    for (const hit of results.hits) {
+      const d2 = hit.document;
+      if (!chapters.has(d2.chapter)) {
+        chapters.set(d2.chapter, {
+          chapter: d2.chapter,
+          title: d2.chapter_title,
+          filename: d2.filename
+        });
+      }
+    }
+    return Array.from(chapters.values()).sort((a2, b2) => a2.chapter - b2.chapter);
+  }
+  async listCharacters() {
+    if (!this.db)
+      return [];
+    const results = await search2(this.db, { term: "", limit: 5e3 });
+    const chars = /* @__PURE__ */ new Set();
+    for (const hit of results.hits) {
+      const cArr = hit.document.characters;
+      if (Array.isArray(cArr)) {
+        cArr.forEach((s2) => {
+          if (s2)
+            chars.add(s2.trim());
+        });
+      }
+    }
+    return Array.from(chars).sort();
   }
   async clear(modelName) {
     this.db = null;
@@ -48823,8 +48898,8 @@ function positionToOffset(content, line, char) {
 }
 function applyLspEdit(content, startLine, startChar, endLine, endChar, newText) {
   const lineCount = content.split("\n").length;
-  if (startLine < 1 || startLine > lineCount || endLine < startLine || endLine > lineCount) {
-    return { error: `Invalid range: file has ${lineCount} lines.` };
+  if (startLine < 1 || startLine > lineCount || endLine < startLine || endLine > lineCount + 1) {
+    return { error: `Invalid range: file has ${lineCount} lines, requested start=${startLine}, end=${endLine}.` };
   }
   const startOffset = positionToOffset(content, startLine, startChar);
   const endOffset = positionToOffset(content, endLine, endChar);
@@ -48875,16 +48950,225 @@ var LocalToolExecutor = class {
     }
     const formatted = results.map((r2, i2) => {
       const meta = r2.metadata;
-      return `### Result ${i2 + 1} (Score: ${r2.score?.toFixed(3)})
+      const chunkInfo = meta.chunk_total > 1 ? ` [chunk ${meta.chunk_index + 1}/${meta.chunk_total}]` : "";
+      return `### Result ${i2 + 1} (Score: ${r2.score?.toFixed(3)})${chunkInfo}
 - **Chapter**: ${meta.chapter} (${meta.chapter_title})
 - **File**: ${meta.filename} (Scene ${meta.scene_index})
 - **Location**: ${meta.location || "N/A"}
 - **Characters**: ${meta.characters || "None"}
 
-${r2.text}
-`;
+${r2.text.slice(0, 800)}${r2.text.length > 800 ? "..." : ""}
+\u2192 To read full scene: read_scene(filename='${meta.filename}', scene_index=${meta.scene_index})`;
     });
     return formatted.join("\n---\n\n");
+  }
+  // -------- Hybrid lookups --------
+  // Each of the next five tools tries the Orama vector DB first (fast and
+  // capable of metadata filtering), then falls back to a file-system scan if
+  // the DB is empty (no import yet) or throws. This keeps the AI usable on a
+  // fresh install before the embedding model has loaded any chapters.
+  async list_chapters(_args) {
+    try {
+      const chapters = await vectorDb.listChapters();
+      if (chapters.length > 0) {
+        return `Chapters (${chapters.length}, indexed):
+` + chapters.map((c3) => `- ${c3.filename} \u2014 chapter ${c3.chapter}: ${c3.title}`).join("\n");
+      }
+    } catch {
+    }
+    return await this._listChaptersFromFiles();
+  }
+  async _listChaptersFromFiles() {
+    const files = this.getChapterFiles();
+    if (files.length === 0)
+      return "No chapters found in chapters/.";
+    const rows = [];
+    for (const file of files) {
+      const content = await this.app.vault.read(file);
+      const chapter = parseChapter(content, file.name);
+      const number = chapter?.number ?? 0;
+      const title = chapter?.title ?? file.basename;
+      const status = chapter?.status ?? "";
+      const wordCount = content.replace(/^---[\s\S]*?\n---\n/, "").trim().split(/\s+/).filter(Boolean).length;
+      rows.push(`- ${file.name} \u2014 chapter ${number}: ${title}${status ? ` (${status})` : ""} \u2014 ~${wordCount} words`);
+    }
+    return `Chapters (${files.length}, file scan):
+${rows.join("\n")}`;
+  }
+  async list_characters(_args) {
+    try {
+      const characters = await vectorDb.listCharacters();
+      if (characters.length > 0) {
+        return `Characters (${characters.length}, indexed):
+` + characters.map((c3) => `- ${c3}`).join("\n");
+      }
+    } catch {
+    }
+    return await this._listCharactersFromFiles();
+  }
+  async _listCharactersFromFiles() {
+    const files = this.getChapterFiles();
+    const counts = /* @__PURE__ */ new Map();
+    const merge = (name) => {
+      const trimmed = name.trim();
+      if (!trimmed)
+        return;
+      counts.set(trimmed, (counts.get(trimmed) ?? 0) + 1);
+    };
+    for (const file of files) {
+      const content = await this.app.vault.read(file);
+      const chapter = parseChapter(content, file.name);
+      if (!chapter)
+        continue;
+      for (const c3 of chapter.characters)
+        merge(c3);
+      for (const scene of chapter.scenes) {
+        for (const c3 of scene.characters)
+          merge(c3);
+      }
+    }
+    if (counts.size === 0) {
+      return "No characters detected. Add `characters: [Name1, Name2]` to a chapter's frontmatter or write `[character: Name] \u2014 \u2026` dialogue.";
+    }
+    const sorted = [...counts.entries()].sort((a2, b2) => b2[1] - a2[1]);
+    return `Characters (${sorted.length}, file scan):
+` + sorted.map(([n2, c3]) => `- ${n2} \u2014 ${c3} mention${c3 === 1 ? "" : "s"}`).join("\n");
+  }
+  async search_by_character(args) {
+    if (!args.name?.trim())
+      return "Provide a character name.";
+    const limit2 = Math.max(1, Math.min(50, args.n ?? 20));
+    try {
+      const results = await vectorDb.searchByMetadata({ characters: args.name }, limit2);
+      if (results.length > 0) {
+        const formatted = results.map((r2) => {
+          const meta = r2.metadata;
+          return `[Ch.${meta.chapter} ${meta.filename} scene ${meta.scene_index} \u2014 ${meta.location || "\u2014"}]
+${r2.text.slice(0, 400)}${r2.text.length > 400 ? "\u2026" : ""}`;
+        });
+        return `Scenes featuring "${args.name}" (${results.length}, indexed):
+` + formatted.join("\n---\n\n");
+      }
+    } catch {
+    }
+    return await this._searchByCharacterFromFiles(args.name, limit2);
+  }
+  async _searchByCharacterFromFiles(name, limit2) {
+    const target = name.trim().toLowerCase();
+    const files = this.getChapterFiles();
+    const hits = [];
+    for (const file of files) {
+      if (hits.length >= limit2)
+        break;
+      const content = await this.app.vault.read(file);
+      const chapter = parseChapter(content, file.name);
+      if (!chapter)
+        continue;
+      for (let i2 = 0; i2 < chapter.scenes.length && hits.length < limit2; i2++) {
+        const scene = chapter.scenes[i2];
+        const matches = scene.dialogue.some((d2) => d2.character.toLowerCase() === target) || scene.characters.some((c3) => c3.toLowerCase() === target);
+        if (matches) {
+          const preview = scene.text.replace(/\s+/g, " ").slice(0, 200);
+          hits.push(`- ${file.name} scene ${i2} (${scene.location || "\u2014"} / ${scene.timeline || "\u2014"}): ${preview}\u2026`);
+        }
+      }
+    }
+    if (hits.length === 0)
+      return `No scenes found featuring "${name}".`;
+    return `Scenes featuring "${name}" (${hits.length}, file scan):
+${hits.join("\n")}`;
+  }
+  async search_by_location(args) {
+    if (!args.location?.trim())
+      return "Provide a location.";
+    const limit2 = Math.max(1, Math.min(50, args.n ?? 20));
+    try {
+      const results = await vectorDb.searchByMetadata({ location: args.location }, limit2);
+      if (results.length > 0) {
+        const formatted = results.map((r2) => {
+          const meta = r2.metadata;
+          return `[Ch.${meta.chapter} ${meta.filename} scene ${meta.scene_index} \u2014 ${meta.timeline || "\u2014"}]
+${r2.text.slice(0, 400)}${r2.text.length > 400 ? "\u2026" : ""}`;
+        });
+        return `Scenes at "${args.location}" (${results.length}, indexed):
+` + formatted.join("\n---\n\n");
+      }
+    } catch {
+    }
+    return await this._searchByLocationFromFiles(args.location, limit2);
+  }
+  async _searchByLocationFromFiles(location2, limit2) {
+    const target = location2.trim().toLowerCase();
+    const files = this.getChapterFiles();
+    const hits = [];
+    for (const file of files) {
+      if (hits.length >= limit2)
+        break;
+      const content = await this.app.vault.read(file);
+      const chapter = parseChapter(content, file.name);
+      if (!chapter)
+        continue;
+      for (let i2 = 0; i2 < chapter.scenes.length && hits.length < limit2; i2++) {
+        const scene = chapter.scenes[i2];
+        if (scene.location.toLowerCase().includes(target)) {
+          const preview = scene.text.replace(/\s+/g, " ").slice(0, 200);
+          hits.push(`- ${file.name} scene ${i2} (${scene.location} / ${scene.timeline || "\u2014"}): ${preview}\u2026`);
+        }
+      }
+    }
+    if (hits.length === 0)
+      return `No scenes found at "${location2}".`;
+    return `Scenes at "${location2}" (${hits.length}, file scan):
+${hits.join("\n")}`;
+  }
+  async get_chapter(args) {
+    const target = Number(args.chapter_number);
+    if (!Number.isFinite(target))
+      return "Provide a numeric chapter_number.";
+    try {
+      const results = await vectorDb.searchByMetadata({ chapter: target }, 50);
+      if (results.length > 0) {
+        const formatted = results.sort((a2, b2) => a2.metadata.scene_index - b2.metadata.scene_index).map((r2) => {
+          const meta = r2.metadata;
+          return `[Scene ${meta.scene_index} \u2014 ${meta.location || "\u2014"} \u2014 ${meta.timeline || ""}]
+${r2.text}`;
+        });
+        return `[Chapter ${target} \u2014 indexed]
+` + formatted.join("\n---\n\n");
+      }
+    } catch {
+    }
+    return await this._getChapterFromFiles(target);
+  }
+  async _getChapterFromFiles(chapterNumber) {
+    const files = this.getChapterFiles();
+    for (const file of files) {
+      const content = await this.app.vault.read(file);
+      const chapter = parseChapter(content, file.name);
+      if (chapter && chapter.number === chapterNumber) {
+        const MAX_CHARS = 8e3;
+        if (content.length > MAX_CHARS) {
+          const cutoff = content.lastIndexOf("\n", MAX_CHARS);
+          const truncated = content.slice(0, cutoff > 0 ? cutoff : MAX_CHARS);
+          return `[Chapter ${chapterNumber} \u2014 ${file.name}]
+${addLineNumbers(truncated)}
+
+[NOTE: truncated; use read_scene with scene_index for specific scenes.]`;
+        }
+        return `[Chapter ${chapterNumber} \u2014 ${file.name}]
+${addLineNumbers(content)}`;
+      }
+    }
+    return `No chapter with number ${chapterNumber} found. Use list_chapters to see available chapters.`;
+  }
+  async reimport_book(_args) {
+    const cmd = this.app.commands;
+    if (cmd?.executeCommandById) {
+      const ok = cmd.executeCommandById("narrative-forge:import-book");
+      if (ok)
+        return "Reimport started. Watch the sidebar for progress.";
+    }
+    return "Could not trigger reimport \u2014 please click the Import button in the Narrative Forge sidebar.";
   }
   async get_book_info(_args) {
     const d2 = this.vaultBookDir;
@@ -49032,120 +49316,6 @@ ${sceneBlock}`;
     const d2 = this.vaultBookDir;
     const folder = d2 ? `${d2}/chapters` : "chapters";
     return this.app.vault.getFiles().filter((f2) => f2.path.startsWith(folder + "/") && f2.extension === "md").sort((a2, b2) => a2.name.localeCompare(b2.name));
-  }
-  async list_chapters(_args) {
-    const files = this.getChapterFiles();
-    if (files.length === 0)
-      return "No chapters found in chapters/.";
-    const rows = [];
-    for (const file of files) {
-      const content = await this.app.vault.read(file);
-      const chapter = parseChapter(content, file.name);
-      const number = chapter?.number ?? 0;
-      const title = chapter?.title ?? file.basename;
-      const status = chapter?.status ?? "";
-      const wordCount = content.replace(/^---[\s\S]*?\n---\n/, "").trim().split(/\s+/).filter(Boolean).length;
-      rows.push(`- ${file.name} \u2014 chapter ${number}: ${title}${status ? ` (${status})` : ""} \u2014 ~${wordCount} words`);
-    }
-    return `Chapters (${files.length}):
-${rows.join("\n")}`;
-  }
-  async list_characters(_args) {
-    const files = this.getChapterFiles();
-    const counts = /* @__PURE__ */ new Map();
-    for (const file of files) {
-      const content = await this.app.vault.read(file);
-      for (const m2 of content.matchAll(/^\[character:\s*([^\]]+)\]/gim)) {
-        const name = m2[1].trim();
-        counts.set(name, (counts.get(name) ?? 0) + 1);
-      }
-    }
-    if (counts.size === 0) {
-      return "No characters detected. Characters are auto-detected from `[character: Name] \u2014 \u2026` dialogue lines.";
-    }
-    const sorted = [...counts.entries()].sort((a2, b2) => b2[1] - a2[1]);
-    return `Characters (${sorted.length}):
-${sorted.map(([n2, c3]) => `- ${n2} \u2014 ${c3} dialogue line${c3 === 1 ? "" : "s"}`).join("\n")}`;
-  }
-  async search_by_character(args) {
-    if (!args.name?.trim())
-      return "Provide a character name.";
-    const target = args.name.trim().toLowerCase();
-    const limit2 = Math.max(1, Math.min(50, args.n ?? 20));
-    const files = this.getChapterFiles();
-    const hits = [];
-    for (const file of files) {
-      if (hits.length >= limit2)
-        break;
-      const content = await this.app.vault.read(file);
-      const chapter = parseChapter(content, file.name);
-      if (!chapter)
-        continue;
-      for (let i2 = 0; i2 < chapter.scenes.length && hits.length < limit2; i2++) {
-        const scene = chapter.scenes[i2];
-        const inDialogue = scene.dialogue.some((d2) => d2.character.toLowerCase() === target);
-        const inMeta = scene.characters.some((c3) => c3.toLowerCase() === target);
-        if (inDialogue || inMeta) {
-          const preview = scene.text.replace(/\s+/g, " ").slice(0, 160);
-          hits.push(`- ${file.name} scene ${i2} (${scene.location || "\u2014"} / ${scene.timeline || "\u2014"}): ${preview}\u2026`);
-        }
-      }
-    }
-    if (hits.length === 0)
-      return `No scenes found featuring "${args.name}".`;
-    return `Scenes featuring "${args.name}" (${hits.length}):
-${hits.join("\n")}`;
-  }
-  async search_by_location(args) {
-    if (!args.location?.trim())
-      return "Provide a location.";
-    const target = args.location.trim().toLowerCase();
-    const limit2 = Math.max(1, Math.min(50, args.n ?? 20));
-    const files = this.getChapterFiles();
-    const hits = [];
-    for (const file of files) {
-      if (hits.length >= limit2)
-        break;
-      const content = await this.app.vault.read(file);
-      const chapter = parseChapter(content, file.name);
-      if (!chapter)
-        continue;
-      for (let i2 = 0; i2 < chapter.scenes.length && hits.length < limit2; i2++) {
-        const scene = chapter.scenes[i2];
-        if (scene.location.toLowerCase().includes(target)) {
-          const preview = scene.text.replace(/\s+/g, " ").slice(0, 160);
-          hits.push(`- ${file.name} scene ${i2} (${scene.location} / ${scene.timeline || "\u2014"}): ${preview}\u2026`);
-        }
-      }
-    }
-    if (hits.length === 0)
-      return `No scenes found at "${args.location}".`;
-    return `Scenes at "${args.location}" (${hits.length}):
-${hits.join("\n")}`;
-  }
-  async get_chapter(args) {
-    const target = Number(args.chapter_number);
-    if (!Number.isFinite(target))
-      return "Provide a numeric chapter_number.";
-    const files = this.getChapterFiles();
-    for (const file of files) {
-      const content = await this.app.vault.read(file);
-      const chapter = parseChapter(content, file.name);
-      if (chapter && chapter.number === target) {
-        const MAX_CHARS = 8e3;
-        if (content.length > MAX_CHARS) {
-          const cutoff = content.lastIndexOf("\n", MAX_CHARS);
-          const truncated = content.slice(0, cutoff > 0 ? cutoff : MAX_CHARS);
-          return `[Chapter ${target} \u2014 ${file.name}]
-${addLineNumbers(truncated)}
-
-[NOTE: truncated; use read_scene with scene_index for specific scenes.]`;
-        }
-        return `[Chapter ${target} \u2014 ${file.name}]
-${addLineNumbers(content)}`;
-      }
-    }
-    return `No chapter with number ${target} found. Use list_chapters to see available chapters.`;
   }
 };
 
@@ -49722,7 +49892,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
     new import_obsidian8.Setting(containerEl).setName("About").setHeading();
     const infoDiv = containerEl.createEl("div", { cls: "narrative-settings-info" });
     infoDiv.createEl("p", {
-      text: "Narrative Forge v0.7.0 \u2014 AI-powered writing assistant for fiction authors."
+      text: "Narrative Forge v0.7.1 \u2014 AI-powered writing assistant for fiction authors."
     });
     infoDiv.createEl("p", {
       text: "Start the backend with: uvicorn narrative_os.server:app --reload",
@@ -50359,12 +50529,24 @@ var LocalServer = class {
               result = await executor.append_to_chapter(input);
             } else if (toolName === "search_semantic") {
               result = await executor.search_semantic(input);
+            } else if (toolName === "search_by_character") {
+              result = await executor.search_by_character(input);
+            } else if (toolName === "search_by_location") {
+              result = await executor.search_by_location(input);
+            } else if (toolName === "get_chapter") {
+              result = await executor.get_chapter(input);
+            } else if (toolName === "list_chapters") {
+              result = await executor.list_chapters(input);
+            } else if (toolName === "list_characters") {
+              result = await executor.list_characters(input);
             } else if (toolName === "read_scene") {
               result = await executor.read_scene(input);
             } else if (toolName === "read_chapter") {
               result = await executor.read_chapter(input);
             } else if (toolName === "get_book_info") {
               result = await executor.get_book_info(input);
+            } else if (toolName === "reimport_book") {
+              result = await executor.reimport_book(input);
             } else {
               result = `Unknown or unsupported local tool: ${toolName}`;
             }
@@ -50497,7 +50679,7 @@ async function importBookLocally(app, bookDir, force = false, embeddingModel, ha
           chapter_title: chapter.title,
           scene_index: sceneIdx,
           location: scene.location,
-          characters: scene.characters.join(","),
+          characters: scene.characters,
           filename: chapter.filename
         });
         newChunkIds.push(id2);
