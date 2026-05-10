@@ -269,6 +269,18 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "create_note",
+    description: "Create a new note file (character profile, location profile, world note, chapter, etc.) or overwrite an existing one. Provide the full file content including YAML frontmatter. The path is relative to the book folder (e.g., 'characters/Hero.md', 'locations/Ganymede.md', 'world/magic-system.md'). Parent folders are created automatically.",
+    input_schema: {
+      type: "object",
+      properties: {
+        filename: { type: "string", description: "Relative path within the book folder, e.g. 'characters/Велтурс.md'" },
+        content: { type: "string", description: "Full file content, including YAML frontmatter if applicable." },
+      },
+      required: ["filename", "content"],
+    },
+  },
+  {
     name: "get_chapter",
     description: "Read the full chapter file matching a given chapter number (from frontmatter `chapter:`). Returned with file-relative line numbers; suitable for editing with edit_scene.",
     input_schema: {
@@ -316,6 +328,7 @@ The author's book may contain these subfolders alongside \`chapters/\`:
 - \`search_by_character\` — find every scene featuring a character; also checks characters/ aliases and prepends a profile notice when found.
 - \`search_by_location\` — find every scene at a location; also checks locations/ aliases and prepends a profile notice when found.
 - \`read_note\` — read any profile or note file by filename (resolves across characters/, locations/, world/, notes/, chapters/). Use this after search_by_character or search_by_location mentions a profile.
+- \`create_note\` — create a new file (character profile, location profile, world note, chapter) or overwrite an existing one. Path is relative to the book folder (e.g., \`characters/Hero.md\`). **Use this whenever the author asks you to create a new character, location, or note — do not just print the content.**
 - \`get_chapter\` — read a chapter by its frontmatter \`chapter:\` number (returns full content with line numbers).
 - \`read_scene\` — reads one scene from a chapter file (with file-relative line numbers).
 - \`read_chapter\` — reads the full chapter file with line numbers. Use this before editing.
@@ -400,7 +413,7 @@ Rules from CLAUDE.md override your defaults. Always check CLAUDE.md before inven
 }
 
 const LOCAL_TOOL_NAMES = new Set([
-  "read_scene", "read_chapter", "read_note", "edit_scene", "write_scene",
+  "read_scene", "read_chapter", "read_note", "create_note", "edit_scene", "write_scene",
   "append_to_chapter", "search_semantic", "get_book_info",
   "list_chapters", "list_characters", "list_locations", "search_by_character",
   "search_by_location", "get_chapter",

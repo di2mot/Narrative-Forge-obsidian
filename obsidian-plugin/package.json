@@ -1,6 +1,6 @@
 {
   "name": "obsidian-narrative-forge",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "AI assistant for fiction writers. Search and edit your book with Claude, GPT, Gemini, or local LLMs (Ollama, LM Studio).",
   "keywords": [
     "obsidian-plugin",

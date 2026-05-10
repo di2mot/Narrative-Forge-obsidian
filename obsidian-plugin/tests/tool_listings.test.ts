@@ -13,6 +13,7 @@ import { TFile, FileSystemAdapter } from "../tests/__mocks__/obsidian";
  * method, so the hybrid tools always fall through to the file-scan branch.
  */
 function makeApp(files: Record<string, string>): any {
+  const store: Record<string, string> = { ...files };
   const tfiles: TFile[] = Object.entries(files).map(([path, _content]) => {
     const t = new TFile();
     t.path = path;
@@ -23,14 +24,36 @@ function makeApp(files: Record<string, string>): any {
     return t;
   });
 
+  function makeTFile(path: string): TFile {
+    const t = new TFile();
+    t.path = path;
+    const name = path.split("/").pop() ?? path;
+    t.name = name;
+    t.basename = name.replace(/\.md$/, "");
+    t.extension = name.endsWith(".md") ? "md" : "";
+    return t;
+  }
+
   const adapter = new FileSystemAdapter();
   return {
     vault: {
       adapter,
       getFiles: () => tfiles,
-      read: async (file: TFile) => files[file.path] ?? "",
+      read: async (file: TFile) => store[file.path] ?? "",
       getAbstractFileByPath: (p: string) => tfiles.find((t) => t.path === p) ?? null,
+      create: async (path: string, content: string) => {
+        store[path] = content;
+        const tf = makeTFile(path);
+        tfiles.push(tf);
+        return tf;
+      },
+      createFolder: async (_path: string) => {},
+      modify: async (file: TFile, content: string) => {
+        store[file.path] = content;
+      },
     },
+    // Expose store for test assertions
+    _store: store,
   };
 }
 
@@ -263,6 +286,33 @@ describe("LocalToolExecutor — read_note resolves across subfolders", () => {
   it("returns not-found for a missing file", async () => {
     const out = await tools.read_note({ filename: "nobody.md" });
     expect(out).toMatch(/file not found/i);
+  });
+});
+
+describe("LocalToolExecutor — create_note", () => {
+  it("creates a new file and returns a Created message", async () => {
+    const app = makeApp(FILES);
+    const tools = new LocalToolExecutor(app, "");
+    const content = "---\ntype: character\nfull_name: Велтурс\n---\nНовий персонаж.";
+    const out = await tools.create_note({ filename: "characters/Велтурс.md", content });
+    expect(out).toMatch(/created/i);
+    expect(out).toContain("characters/Велтурс.md");
+    expect(app._store["characters/Велтурс.md"]).toBe(content);
+  });
+
+  it("overwrites an existing file and returns an Updated message", async () => {
+    const app = makeApp(FILES);
+    const tools = new LocalToolExecutor(app, "");
+    const newContent = "---\ntype: character\nfull_name: Рей Нансен\nstatus: dead\n---\nОновлено.";
+    const out = await tools.create_note({ filename: "characters/Рей Нансен.md", content: newContent });
+    expect(out).toMatch(/updated/i);
+    expect(app._store["characters/Рей Нансен.md"]).toBe(newContent);
+  });
+
+  it("returns an error when filename is empty", async () => {
+    const tools = new LocalToolExecutor(makeApp(FILES), "");
+    const out = await tools.create_note({ filename: "", content: "x" });
+    expect(out).toMatch(/provide/i);
   });
 });
 

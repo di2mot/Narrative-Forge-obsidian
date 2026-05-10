@@ -484,6 +484,32 @@ export class LocalToolExecutor {
     return addLineNumbers(content);
   }
 
+  async create_note(args: { filename: string; content: string }): Promise<string> {
+    if (!args.filename) return "Please provide a filename (e.g., characters/Hero.md).";
+    if (typeof args.content !== "string") return "Please provide content for the file.";
+
+    const d = this.vaultBookDir;
+    const fullPath = normalizePath(d ? `${d}/${args.filename}` : args.filename);
+
+    const existing = this.app.vault.getAbstractFileByPath(fullPath);
+    if (existing instanceof TFile) {
+      await this.app.vault.modify(existing, args.content);
+      return `Updated ${args.filename} (${args.content.split("\n").length} lines).`;
+    }
+
+    // Ensure parent folders exist before creating the file
+    const segments = fullPath.split("/");
+    for (let i = 1; i < segments.length - 1; i++) {
+      const folderPath = normalizePath(segments.slice(0, i + 1).join("/"));
+      if (!this.app.vault.getAbstractFileByPath(folderPath)) {
+        await this.app.vault.createFolder(folderPath);
+      }
+    }
+
+    await this.app.vault.create(fullPath, args.content);
+    return `Created ${args.filename} (${args.content.split("\n").length} lines).`;
+  }
+
   async edit_scene(args: {
     filename: string;
     start_line: number;

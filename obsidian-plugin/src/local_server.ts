@@ -62,6 +62,8 @@ export class LocalServer {
               result = await executor.list_locations(input);
             } else if (toolName === "read_note") {
               result = await executor.read_note(input as any);
+            } else if (toolName === "create_note") {
+              result = await executor.create_note(input as any);
             } else if (toolName === "read_scene") {
               result = await executor.read_scene(input as any);
             } else if (toolName === "read_chapter") {
