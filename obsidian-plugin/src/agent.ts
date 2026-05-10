@@ -225,16 +225,21 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   },
   {
     name: "list_characters",
-    description: "List every character that has dialogue in the book, ranked by how many lines they speak. Auto-detected from `[character: Name]` dialogue tags.",
+    description: "List every character mentioned in the book, ranked by mentions. Includes characters with profile files in characters/ (marked with ', profile'). Auto-detected from `[character: Name]` dialogue tags, frontmatter, and characters/*.md profiles.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "list_locations",
+    description: "List every location mentioned in the book, merged from scene `location::` metadata and location profile files in locations/. Profile locations are marked with ', profile'.",
     input_schema: { type: "object", properties: {} },
   },
   {
     name: "search_by_character",
-    description: "Find every scene featuring a given character (by exact name match against dialogue tags or scene metadata). Faster and more deterministic than search_semantic when the author names a specific character.",
+    description: "Find every scene featuring a given character. Also checks characters/ profile files for alias matches and prepends a profile notice when found. Call read_note on the profile file to get the full bio.",
     input_schema: {
       type: "object",
       properties: {
-        name: { type: "string", description: "Character name as it appears in `[character: Name]` tags." },
+        name: { type: "string", description: "Character name as it appears in `[character: Name]` tags or in character profile aliases." },
         n: { type: "integer", description: "Maximum number of scenes to return (default 20)." },
       },
       required: ["name"],
@@ -242,7 +247,7 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
   },
   {
     name: "search_by_location",
-    description: "Find every scene at a given location (case-insensitive substring match against scene `location::` metadata).",
+    description: "Find every scene at a given location (case-insensitive substring match against scene `location::` metadata and locations/ profile aliases). Prepends a profile notice when a matching profile is found.",
     input_schema: {
       type: "object",
       properties: {
@@ -250,6 +255,17 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
         n: { type: "integer", description: "Maximum number of scenes to return (default 20)." },
       },
       required: ["location"],
+    },
+  },
+  {
+    name: "read_note",
+    description: "Read any note file (character profile, location description, world rules, etc.) by filename. Resolves across characters/, locations/, world/, notes/, and chapters/. Use this to get the full content of a profile after search_by_character or search_by_location mentions one.",
+    input_schema: {
+      type: "object",
+      properties: {
+        filename: { type: "string", description: "Filename, e.g. 'Рей Нансен.md' or 'Ганімед.md'" },
+      },
+      required: ["filename"],
     },
   },
   {
@@ -282,13 +298,24 @@ async function buildSystemPrompt(app: any, bookDir: string): Promise<string> {
   if (cached) return cached;
   const BASE_PROMPT = `You are an expert fiction writing assistant embedded in Obsidian. You help authors write, edit, and maintain narrative consistency across their book.
 
+## Book folder layout
+The author's book may contain these subfolders alongside \`chapters/\`:
+- \`characters/\` — one \`.md\` file per character with frontmatter \`full_name\`, \`aliases\`, \`role\`, \`status\`, etc.
+- \`locations/\` — one \`.md\` file per location with frontmatter \`full_name\`, \`aliases\`, \`location_type\`, etc.
+- \`world/\` — world-building notes with frontmatter \`type: world\` and \`topic\`.
+- \`notes/\` — general notes.
+
+**Workflow for character/location questions:** call \`list_characters\` or \`list_locations\` first. If an entry is marked ", profile", call \`read_note("<Name>.md")\` to retrieve the canonical profile before answering.
+
 ## Available tools
 - \`get_book_info\` — returns the number of indexed chapters. Call this if the author asks about indexing status.
 - \`list_chapters\` — lists every chapter file with number, title, status, and word count. Use this to discover filenames before \`read_chapter\`.
-- \`list_characters\` — lists every character with dialogue, ranked by line count.
+- \`list_characters\` — lists every character in the book (chapters + characters/ profiles), ranked by mentions. Entries marked ", profile" have a dedicated profile file.
+- \`list_locations\` — lists every location in the book (chapters + locations/ profiles). Entries marked ", profile" have a dedicated profile file.
 - \`search_semantic\` — semantic similarity search across all scenes. Use this to find relevant context before writing.
-- \`search_by_character\` — fast exact-name lookup of every scene featuring a given character.
-- \`search_by_location\` — fast lookup of every scene at a given location.
+- \`search_by_character\` — find every scene featuring a character; also checks characters/ aliases and prepends a profile notice when found.
+- \`search_by_location\` — find every scene at a location; also checks locations/ aliases and prepends a profile notice when found.
+- \`read_note\` — read any profile or note file by filename (resolves across characters/, locations/, world/, notes/, chapters/). Use this after search_by_character or search_by_location mentions a profile.
 - \`get_chapter\` — read a chapter by its frontmatter \`chapter:\` number (returns full content with line numbers).
 - \`read_scene\` — reads one scene from a chapter file (with file-relative line numbers).
 - \`read_chapter\` — reads the full chapter file with line numbers. Use this before editing.
@@ -373,9 +400,9 @@ Rules from CLAUDE.md override your defaults. Always check CLAUDE.md before inven
 }
 
 const LOCAL_TOOL_NAMES = new Set([
-  "read_scene", "read_chapter", "edit_scene", "write_scene",
+  "read_scene", "read_chapter", "read_note", "edit_scene", "write_scene",
   "append_to_chapter", "search_semantic", "get_book_info",
-  "list_chapters", "list_characters", "search_by_character",
+  "list_chapters", "list_characters", "list_locations", "search_by_character",
   "search_by_location", "get_chapter",
 ]);
 

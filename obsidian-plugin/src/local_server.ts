@@ -58,6 +58,10 @@ export class LocalServer {
               result = await executor.list_chapters(input);
             } else if (toolName === "list_characters") {
               result = await executor.list_characters(input);
+            } else if (toolName === "list_locations") {
+              result = await executor.list_locations(input);
+            } else if (toolName === "read_note") {
+              result = await executor.read_note(input as any);
             } else if (toolName === "read_scene") {
               result = await executor.read_scene(input as any);
             } else if (toolName === "read_chapter") {

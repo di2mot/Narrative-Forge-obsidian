@@ -1,5 +1,5 @@
-import { App, TFile, normalizePath, FileSystemAdapter } from "obsidian";
-import { parseChapter } from "./parser";
+import { App, TFile, normalizePath, FileSystemAdapter, parseYaml } from "obsidian";
+import { parseChapter, parseWikilinkList } from "./parser";
 import { vectorDb } from "./database";
 
 export function addLineNumbers(text: string, startLine: number = 1): string {
@@ -85,6 +85,9 @@ export class LocalToolExecutor {
     const d = this.vaultBookDir;
     const searchPaths = [
       d ? `${d}/chapters/${filename}` : `chapters/${filename}`,
+      d ? `${d}/characters/${filename}` : `characters/${filename}`,
+      d ? `${d}/locations/${filename}` : `locations/${filename}`,
+      d ? `${d}/world/${filename}` : `world/${filename}`,
       d ? `${d}/notes/${filename}` : `notes/${filename}`,
       d ? `${d}/${filename}` : filename,
       filename,
@@ -181,20 +184,34 @@ export class LocalToolExecutor {
       const content = await this.app.vault.read(file);
       const chapter = parseChapter(content, file.name);
       if (!chapter) continue;
-      // Frontmatter `characters:` (chapter-level) and scene-level dialogue
-      // tags + `characters::` Dataview metadata are all merged via parser.ts
-      // into chapter.characters and scene.characters.
       for (const c of chapter.characters) merge(c);
       for (const scene of chapter.scenes) {
         for (const c of scene.characters) merge(c);
       }
     }
+
+    // Merge character profiles from characters/; track which canonical names have profiles.
+    const profileNames = new Set<string>();
+    for (const pfile of this.getProfileFiles("characters")) {
+      const content = await this.app.vault.read(pfile);
+      const fm = this.parseFrontmatter(content);
+      const canonical = fm.full_name ? String(fm.full_name).trim() : pfile.basename;
+      profileNames.add(canonical.toLowerCase());
+      if (!counts.has(canonical)) counts.set(canonical, 0);
+      for (const alias of parseWikilinkList(fm.aliases)) {
+        if (!counts.has(alias)) counts.set(alias, 0);
+      }
+    }
+
     if (counts.size === 0) {
       return "No characters detected. Add `characters: [Name1, Name2]` to a chapter's frontmatter or write `[character: Name] — …` dialogue.";
     }
     const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
     return `Characters (${sorted.length}, file scan):\n` +
-      sorted.map(([n, c]) => `- ${n} — ${c} mention${c === 1 ? "" : "s"}`).join("\n");
+      sorted.map(([n, c]) => {
+        const profileTag = profileNames.has(n.toLowerCase()) ? ", profile" : "";
+        return `- ${n} — ${c} mention${c === 1 ? "" : "s"}${profileTag}`;
+      }).join("\n");
   }
 
   async search_by_character(args: { name: string; n?: number }): Promise<string> {
@@ -217,6 +234,20 @@ export class LocalToolExecutor {
 
   private async _searchByCharacterFromFiles(name: string, limit: number): Promise<string> {
     const target = name.trim().toLowerCase();
+
+    // Check for a matching profile in characters/
+    let profileSection = "";
+    for (const pfile of this.getProfileFiles("characters")) {
+      const content = await this.app.vault.read(pfile);
+      const fm = this.parseFrontmatter(content);
+      const canonical = fm.full_name ? String(fm.full_name).trim() : pfile.basename;
+      const allNames = [canonical, pfile.basename, ...parseWikilinkList(fm.aliases)].map(s => s.toLowerCase());
+      if (allNames.some(n => n.includes(target) || target.includes(n))) {
+        profileSection = `Profile: ${pfile.name} (${canonical})\nCall read_note("${pfile.name}") to view the full profile.\n\n`;
+        break;
+      }
+    }
+
     const files = this.getChapterFiles();
     const hits: string[] = [];
     for (const file of files) {
@@ -235,8 +266,11 @@ export class LocalToolExecutor {
         }
       }
     }
-    if (hits.length === 0) return `No scenes found featuring "${name}".`;
-    return `Scenes featuring "${name}" (${hits.length}, file scan):\n${hits.join("\n")}`;
+    if (hits.length === 0 && !profileSection) return `No scenes found featuring "${name}".`;
+    const scenesSection = hits.length > 0
+      ? `Scenes featuring "${name}" (${hits.length}, file scan):\n${hits.join("\n")}`
+      : `No scenes found featuring "${name}" in chapters.`;
+    return profileSection ? `${profileSection}${scenesSection}` : scenesSection;
   }
 
   async search_by_location(args: { location: string; n?: number }): Promise<string> {
@@ -259,6 +293,20 @@ export class LocalToolExecutor {
 
   private async _searchByLocationFromFiles(location: string, limit: number): Promise<string> {
     const target = location.trim().toLowerCase();
+
+    // Check for a matching profile in locations/
+    let profileSection = "";
+    for (const pfile of this.getProfileFiles("locations")) {
+      const content = await this.app.vault.read(pfile);
+      const fm = this.parseFrontmatter(content);
+      const canonical = fm.full_name ? String(fm.full_name).trim() : pfile.basename;
+      const allNames = [canonical, pfile.basename, ...parseWikilinkList(fm.aliases)].map(s => s.toLowerCase());
+      if (allNames.some(n => n.includes(target) || target.includes(n))) {
+        profileSection = `Profile: ${pfile.name} (${canonical})\nCall read_note("${pfile.name}") to view the full profile.\n\n`;
+        break;
+      }
+    }
+
     const files = this.getChapterFiles();
     const hits: string[] = [];
     for (const file of files) {
@@ -274,8 +322,56 @@ export class LocalToolExecutor {
         }
       }
     }
-    if (hits.length === 0) return `No scenes found at "${location}".`;
-    return `Scenes at "${location}" (${hits.length}, file scan):\n${hits.join("\n")}`;
+    if (hits.length === 0 && !profileSection) return `No scenes found at "${location}".`;
+    const scenesSection = hits.length > 0
+      ? `Scenes at "${location}" (${hits.length}, file scan):\n${hits.join("\n")}`
+      : `No scenes found at "${location}" in chapters.`;
+    return profileSection ? `${profileSection}${scenesSection}` : scenesSection;
+  }
+
+  async list_locations(_args: unknown): Promise<string> {
+    return await this._listLocationsFromFiles();
+  }
+
+  private async _listLocationsFromFiles(): Promise<string> {
+    const counts = new Map<string, number>();
+    const merge = (loc: string) => {
+      const trimmed = loc.trim();
+      if (!trimmed) return;
+      counts.set(trimmed, (counts.get(trimmed) ?? 0) + 1);
+    };
+    for (const file of this.getChapterFiles()) {
+      const content = await this.app.vault.read(file);
+      const chapter = parseChapter(content, file.name);
+      if (!chapter) continue;
+      if (chapter.location) merge(chapter.location);
+      for (const scene of chapter.scenes) {
+        if (scene.location) merge(scene.location);
+      }
+    }
+
+    // Merge location profiles from locations/
+    const profileNames = new Set<string>();
+    for (const pfile of this.getProfileFiles("locations")) {
+      const content = await this.app.vault.read(pfile);
+      const fm = this.parseFrontmatter(content);
+      const canonical = fm.full_name ? String(fm.full_name).trim() : pfile.basename;
+      profileNames.add(canonical.toLowerCase());
+      if (!counts.has(canonical)) counts.set(canonical, 0);
+      for (const alias of parseWikilinkList(fm.aliases)) {
+        if (!counts.has(alias)) counts.set(alias, 0);
+      }
+    }
+
+    if (counts.size === 0) {
+      return "No locations detected. Add `location:: Place Name` to scene metadata or create files in locations/.";
+    }
+    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    return `Locations (${sorted.length}, file scan):\n` +
+      sorted.map(([n, c]) => {
+        const profileTag = profileNames.has(n.toLowerCase()) ? ", profile" : "";
+        return `- ${n} — ${c} scene${c === 1 ? "" : "s"}${profileTag}`;
+      }).join("\n");
   }
 
   async get_chapter(args: { chapter_number: number }): Promise<string> {
@@ -371,6 +467,19 @@ export class LocalToolExecutor {
       const truncated = content.slice(0, cutoff > 0 ? cutoff : MAX_CHARS);
       return addLineNumbers(truncated) +
         `\n\n[NOTE: Content truncated at line boundary (~${MAX_CHARS} chars). Use read_scene with scene_index for specific scenes.]`;
+    }
+    return addLineNumbers(content);
+  }
+
+  async read_note(args: { filename: string }): Promise<string> {
+    const file = this.getFile(args.filename);
+    if (!file) return `File not found: ${args.filename}. Available folders: characters/, locations/, world/, notes/, chapters/`;
+    const content = await this.app.vault.read(file);
+    const MAX_CHARS = 8000;
+    if (content.length > MAX_CHARS) {
+      const cutoff = content.lastIndexOf("\n", MAX_CHARS);
+      const truncated = content.slice(0, cutoff > 0 ? cutoff : MAX_CHARS);
+      return addLineNumbers(truncated) + `\n\n[NOTE: Content truncated at ~${MAX_CHARS} chars.]`;
     }
     return addLineNumbers(content);
   }
@@ -488,6 +597,27 @@ export class LocalToolExecutor {
       .getFiles()
       .filter((f) => f.path.startsWith(folder + "/") && f.extension === "md")
       .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** All `.md` files inside `<bookDir>/<subfolder>/`, sorted by name. */
+  private getProfileFiles(subfolder: string): TFile[] {
+    const d = this.vaultBookDir;
+    const folder = d ? `${d}/${subfolder}` : subfolder;
+    return this.app.vault
+      .getFiles()
+      .filter((f) => f.path.startsWith(folder + "/") && f.extension === "md")
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** Parse YAML frontmatter from a file's raw content. */
+  private parseFrontmatter(content: string): Record<string, unknown> {
+    const match = content.match(/^---\n([\s\S]*?)\n---\n/);
+    if (!match) return {};
+    try {
+      return (parseYaml(match[1]) as Record<string, unknown>) || {};
+    } catch {
+      return {};
+    }
   }
 
 }

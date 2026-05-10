@@ -20220,16 +20220,21 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "list_characters",
-    description: "List every character that has dialogue in the book, ranked by how many lines they speak. Auto-detected from `[character: Name]` dialogue tags.",
+    description: "List every character mentioned in the book, ranked by mentions. Includes characters with profile files in characters/ (marked with ', profile'). Auto-detected from `[character: Name]` dialogue tags, frontmatter, and characters/*.md profiles.",
+    input_schema: { type: "object", properties: {} }
+  },
+  {
+    name: "list_locations",
+    description: "List every location mentioned in the book, merged from scene `location::` metadata and location profile files in locations/. Profile locations are marked with ', profile'.",
     input_schema: { type: "object", properties: {} }
   },
   {
     name: "search_by_character",
-    description: "Find every scene featuring a given character (by exact name match against dialogue tags or scene metadata). Faster and more deterministic than search_semantic when the author names a specific character.",
+    description: "Find every scene featuring a given character. Also checks characters/ profile files for alias matches and prepends a profile notice when found. Call read_note on the profile file to get the full bio.",
     input_schema: {
       type: "object",
       properties: {
-        name: { type: "string", description: "Character name as it appears in `[character: Name]` tags." },
+        name: { type: "string", description: "Character name as it appears in `[character: Name]` tags or in character profile aliases." },
         n: { type: "integer", description: "Maximum number of scenes to return (default 20)." }
       },
       required: ["name"]
@@ -20237,7 +20242,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "search_by_location",
-    description: "Find every scene at a given location (case-insensitive substring match against scene `location::` metadata).",
+    description: "Find every scene at a given location (case-insensitive substring match against scene `location::` metadata and locations/ profile aliases). Prepends a profile notice when a matching profile is found.",
     input_schema: {
       type: "object",
       properties: {
@@ -20245,6 +20250,17 @@ var TOOL_DEFINITIONS = [
         n: { type: "integer", description: "Maximum number of scenes to return (default 20)." }
       },
       required: ["location"]
+    }
+  },
+  {
+    name: "read_note",
+    description: "Read any note file (character profile, location description, world rules, etc.) by filename. Resolves across characters/, locations/, world/, notes/, and chapters/. Use this to get the full content of a profile after search_by_character or search_by_location mentions one.",
+    input_schema: {
+      type: "object",
+      properties: {
+        filename: { type: "string", description: "Filename, e.g. '\u0420\u0435\u0439 \u041D\u0430\u043D\u0441\u0435\u043D.md' or '\u0413\u0430\u043D\u0456\u043C\u0435\u0434.md'" }
+      },
+      required: ["filename"]
     }
   },
   {
@@ -20272,13 +20288,24 @@ async function buildSystemPrompt(app, bookDir) {
     return cached;
   const BASE_PROMPT = `You are an expert fiction writing assistant embedded in Obsidian. You help authors write, edit, and maintain narrative consistency across their book.
 
+## Book folder layout
+The author's book may contain these subfolders alongside \`chapters/\`:
+- \`characters/\` \u2014 one \`.md\` file per character with frontmatter \`full_name\`, \`aliases\`, \`role\`, \`status\`, etc.
+- \`locations/\` \u2014 one \`.md\` file per location with frontmatter \`full_name\`, \`aliases\`, \`location_type\`, etc.
+- \`world/\` \u2014 world-building notes with frontmatter \`type: world\` and \`topic\`.
+- \`notes/\` \u2014 general notes.
+
+**Workflow for character/location questions:** call \`list_characters\` or \`list_locations\` first. If an entry is marked ", profile", call \`read_note("<Name>.md")\` to retrieve the canonical profile before answering.
+
 ## Available tools
 - \`get_book_info\` \u2014 returns the number of indexed chapters. Call this if the author asks about indexing status.
 - \`list_chapters\` \u2014 lists every chapter file with number, title, status, and word count. Use this to discover filenames before \`read_chapter\`.
-- \`list_characters\` \u2014 lists every character with dialogue, ranked by line count.
+- \`list_characters\` \u2014 lists every character in the book (chapters + characters/ profiles), ranked by mentions. Entries marked ", profile" have a dedicated profile file.
+- \`list_locations\` \u2014 lists every location in the book (chapters + locations/ profiles). Entries marked ", profile" have a dedicated profile file.
 - \`search_semantic\` \u2014 semantic similarity search across all scenes. Use this to find relevant context before writing.
-- \`search_by_character\` \u2014 fast exact-name lookup of every scene featuring a given character.
-- \`search_by_location\` \u2014 fast lookup of every scene at a given location.
+- \`search_by_character\` \u2014 find every scene featuring a character; also checks characters/ aliases and prepends a profile notice when found.
+- \`search_by_location\` \u2014 find every scene at a location; also checks locations/ aliases and prepends a profile notice when found.
+- \`read_note\` \u2014 read any profile or note file by filename (resolves across characters/, locations/, world/, notes/, chapters/). Use this after search_by_character or search_by_location mentions a profile.
 - \`get_chapter\` \u2014 read a chapter by its frontmatter \`chapter:\` number (returns full content with line numbers).
 - \`read_scene\` \u2014 reads one scene from a chapter file (with file-relative line numbers).
 - \`read_chapter\` \u2014 reads the full chapter file with line numbers. Use this before editing.
@@ -20363,6 +20390,7 @@ ${claudeContent.trim()}`);
 var LOCAL_TOOL_NAMES = /* @__PURE__ */ new Set([
   "read_scene",
   "read_chapter",
+  "read_note",
   "edit_scene",
   "write_scene",
   "append_to_chapter",
@@ -20370,6 +20398,7 @@ var LOCAL_TOOL_NAMES = /* @__PURE__ */ new Set([
   "get_book_info",
   "list_chapters",
   "list_characters",
+  "list_locations",
   "search_by_character",
   "search_by_location",
   "get_chapter"
@@ -48930,6 +48959,9 @@ var LocalToolExecutor = class {
     const d2 = this.vaultBookDir;
     const searchPaths = [
       d2 ? `${d2}/chapters/${filename}` : `chapters/${filename}`,
+      d2 ? `${d2}/characters/${filename}` : `characters/${filename}`,
+      d2 ? `${d2}/locations/${filename}` : `locations/${filename}`,
+      d2 ? `${d2}/world/${filename}` : `world/${filename}`,
       d2 ? `${d2}/notes/${filename}` : `notes/${filename}`,
       d2 ? `${d2}/${filename}` : filename,
       filename
@@ -49027,12 +49059,28 @@ ${rows.join("\n")}`;
           merge(c3);
       }
     }
+    const profileNames = /* @__PURE__ */ new Set();
+    for (const pfile of this.getProfileFiles("characters")) {
+      const content = await this.app.vault.read(pfile);
+      const fm2 = this.parseFrontmatter(content);
+      const canonical = fm2.full_name ? String(fm2.full_name).trim() : pfile.basename;
+      profileNames.add(canonical.toLowerCase());
+      if (!counts.has(canonical))
+        counts.set(canonical, 0);
+      for (const alias of parseWikilinkList(fm2.aliases)) {
+        if (!counts.has(alias))
+          counts.set(alias, 0);
+      }
+    }
     if (counts.size === 0) {
       return "No characters detected. Add `characters: [Name1, Name2]` to a chapter's frontmatter or write `[character: Name] \u2014 \u2026` dialogue.";
     }
     const sorted = [...counts.entries()].sort((a2, b2) => b2[1] - a2[1]);
     return `Characters (${sorted.length}, file scan):
-` + sorted.map(([n2, c3]) => `- ${n2} \u2014 ${c3} mention${c3 === 1 ? "" : "s"}`).join("\n");
+` + sorted.map(([n2, c3]) => {
+      const profileTag = profileNames.has(n2.toLowerCase()) ? ", profile" : "";
+      return `- ${n2} \u2014 ${c3} mention${c3 === 1 ? "" : "s"}${profileTag}`;
+    }).join("\n");
   }
   async search_by_character(args) {
     if (!args.name?.trim())
@@ -49055,6 +49103,20 @@ ${r2.text.slice(0, 400)}${r2.text.length > 400 ? "\u2026" : ""}`;
   }
   async _searchByCharacterFromFiles(name, limit2) {
     const target = name.trim().toLowerCase();
+    let profileSection = "";
+    for (const pfile of this.getProfileFiles("characters")) {
+      const content = await this.app.vault.read(pfile);
+      const fm2 = this.parseFrontmatter(content);
+      const canonical = fm2.full_name ? String(fm2.full_name).trim() : pfile.basename;
+      const allNames = [canonical, pfile.basename, ...parseWikilinkList(fm2.aliases)].map((s2) => s2.toLowerCase());
+      if (allNames.some((n2) => n2.includes(target) || target.includes(n2))) {
+        profileSection = `Profile: ${pfile.name} (${canonical})
+Call read_note("${pfile.name}") to view the full profile.
+
+`;
+        break;
+      }
+    }
     const files = this.getChapterFiles();
     const hits = [];
     for (const file of files) {
@@ -49073,10 +49135,11 @@ ${r2.text.slice(0, 400)}${r2.text.length > 400 ? "\u2026" : ""}`;
         }
       }
     }
-    if (hits.length === 0)
+    if (hits.length === 0 && !profileSection)
       return `No scenes found featuring "${name}".`;
-    return `Scenes featuring "${name}" (${hits.length}, file scan):
-${hits.join("\n")}`;
+    const scenesSection = hits.length > 0 ? `Scenes featuring "${name}" (${hits.length}, file scan):
+${hits.join("\n")}` : `No scenes found featuring "${name}" in chapters.`;
+    return profileSection ? `${profileSection}${scenesSection}` : scenesSection;
   }
   async search_by_location(args) {
     if (!args.location?.trim())
@@ -49099,6 +49162,20 @@ ${r2.text.slice(0, 400)}${r2.text.length > 400 ? "\u2026" : ""}`;
   }
   async _searchByLocationFromFiles(location2, limit2) {
     const target = location2.trim().toLowerCase();
+    let profileSection = "";
+    for (const pfile of this.getProfileFiles("locations")) {
+      const content = await this.app.vault.read(pfile);
+      const fm2 = this.parseFrontmatter(content);
+      const canonical = fm2.full_name ? String(fm2.full_name).trim() : pfile.basename;
+      const allNames = [canonical, pfile.basename, ...parseWikilinkList(fm2.aliases)].map((s2) => s2.toLowerCase());
+      if (allNames.some((n2) => n2.includes(target) || target.includes(n2))) {
+        profileSection = `Profile: ${pfile.name} (${canonical})
+Call read_note("${pfile.name}") to view the full profile.
+
+`;
+        break;
+      }
+    }
     const files = this.getChapterFiles();
     const hits = [];
     for (const file of files) {
@@ -49116,10 +49193,57 @@ ${r2.text.slice(0, 400)}${r2.text.length > 400 ? "\u2026" : ""}`;
         }
       }
     }
-    if (hits.length === 0)
+    if (hits.length === 0 && !profileSection)
       return `No scenes found at "${location2}".`;
-    return `Scenes at "${location2}" (${hits.length}, file scan):
-${hits.join("\n")}`;
+    const scenesSection = hits.length > 0 ? `Scenes at "${location2}" (${hits.length}, file scan):
+${hits.join("\n")}` : `No scenes found at "${location2}" in chapters.`;
+    return profileSection ? `${profileSection}${scenesSection}` : scenesSection;
+  }
+  async list_locations(_args) {
+    return await this._listLocationsFromFiles();
+  }
+  async _listLocationsFromFiles() {
+    const counts = /* @__PURE__ */ new Map();
+    const merge = (loc) => {
+      const trimmed = loc.trim();
+      if (!trimmed)
+        return;
+      counts.set(trimmed, (counts.get(trimmed) ?? 0) + 1);
+    };
+    for (const file of this.getChapterFiles()) {
+      const content = await this.app.vault.read(file);
+      const chapter = parseChapter(content, file.name);
+      if (!chapter)
+        continue;
+      if (chapter.location)
+        merge(chapter.location);
+      for (const scene of chapter.scenes) {
+        if (scene.location)
+          merge(scene.location);
+      }
+    }
+    const profileNames = /* @__PURE__ */ new Set();
+    for (const pfile of this.getProfileFiles("locations")) {
+      const content = await this.app.vault.read(pfile);
+      const fm2 = this.parseFrontmatter(content);
+      const canonical = fm2.full_name ? String(fm2.full_name).trim() : pfile.basename;
+      profileNames.add(canonical.toLowerCase());
+      if (!counts.has(canonical))
+        counts.set(canonical, 0);
+      for (const alias of parseWikilinkList(fm2.aliases)) {
+        if (!counts.has(alias))
+          counts.set(alias, 0);
+      }
+    }
+    if (counts.size === 0) {
+      return "No locations detected. Add `location:: Place Name` to scene metadata or create files in locations/.";
+    }
+    const sorted = [...counts.entries()].sort((a2, b2) => b2[1] - a2[1]);
+    return `Locations (${sorted.length}, file scan):
+` + sorted.map(([n2, c3]) => {
+      const profileTag = profileNames.has(n2.toLowerCase()) ? ", profile" : "";
+      return `- ${n2} \u2014 ${c3} scene${c3 === 1 ? "" : "s"}${profileTag}`;
+    }).join("\n");
   }
   async get_chapter(args) {
     const target = Number(args.chapter_number);
@@ -49212,6 +49336,21 @@ ${addLineNumbers(scene.text, fileLineStart)}`;
       return addLineNumbers(truncated) + `
 
 [NOTE: Content truncated at line boundary (~${MAX_CHARS} chars). Use read_scene with scene_index for specific scenes.]`;
+    }
+    return addLineNumbers(content);
+  }
+  async read_note(args) {
+    const file = this.getFile(args.filename);
+    if (!file)
+      return `File not found: ${args.filename}. Available folders: characters/, locations/, world/, notes/, chapters/`;
+    const content = await this.app.vault.read(file);
+    const MAX_CHARS = 8e3;
+    if (content.length > MAX_CHARS) {
+      const cutoff = content.lastIndexOf("\n", MAX_CHARS);
+      const truncated = content.slice(0, cutoff > 0 ? cutoff : MAX_CHARS);
+      return addLineNumbers(truncated) + `
+
+[NOTE: Content truncated at ~${MAX_CHARS} chars.]`;
     }
     return addLineNumbers(content);
   }
@@ -49316,6 +49455,23 @@ ${sceneBlock}`;
     const d2 = this.vaultBookDir;
     const folder = d2 ? `${d2}/chapters` : "chapters";
     return this.app.vault.getFiles().filter((f2) => f2.path.startsWith(folder + "/") && f2.extension === "md").sort((a2, b2) => a2.name.localeCompare(b2.name));
+  }
+  /** All `.md` files inside `<bookDir>/<subfolder>/`, sorted by name. */
+  getProfileFiles(subfolder) {
+    const d2 = this.vaultBookDir;
+    const folder = d2 ? `${d2}/${subfolder}` : subfolder;
+    return this.app.vault.getFiles().filter((f2) => f2.path.startsWith(folder + "/") && f2.extension === "md").sort((a2, b2) => a2.name.localeCompare(b2.name));
+  }
+  /** Parse YAML frontmatter from a file's raw content. */
+  parseFrontmatter(content) {
+    const match = content.match(/^---\n([\s\S]*?)\n---\n/);
+    if (!match)
+      return {};
+    try {
+      return (0, import_obsidian6.parseYaml)(match[1]) || {};
+    } catch {
+      return {};
+    }
   }
 };
 
@@ -49892,7 +50048,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
     new import_obsidian8.Setting(containerEl).setName("About").setHeading();
     const infoDiv = containerEl.createEl("div", { cls: "narrative-settings-info" });
     infoDiv.createEl("p", {
-      text: "Narrative Forge v0.7.1 \u2014 AI-powered writing assistant for fiction authors."
+      text: "Narrative Forge v0.7.2 \u2014 AI-powered writing assistant for fiction authors."
     });
     infoDiv.createEl("p", {
       text: "Start the backend with: uvicorn narrative_os.server:app --reload",
@@ -50539,6 +50695,10 @@ var LocalServer = class {
               result = await executor.list_chapters(input);
             } else if (toolName === "list_characters") {
               result = await executor.list_characters(input);
+            } else if (toolName === "list_locations") {
+              result = await executor.list_locations(input);
+            } else if (toolName === "read_note") {
+              result = await executor.read_note(input);
             } else if (toolName === "read_scene") {
               result = await executor.read_scene(input);
             } else if (toolName === "read_chapter") {

@@ -80,6 +80,25 @@ const FILES = {
     "Trond and Sam stood at the dock. Neither said a word.",
   ].join("\n"),
   "notes/world.md": "Some world notes — should NOT show up in chapter listings.",
+  "characters/Рей Нансен.md": [
+    "---",
+    "type: character",
+    "full_name: Рей Нансен",
+    "aliases: [Rey, Рей]",
+    "role: protagonist",
+    "status: alive",
+    "---",
+    "Рей — головний герой. Прибув на Ганімед у Рік 1.",
+  ].join("\n"),
+  "locations/Ганімед.md": [
+    "---",
+    "type: location",
+    "full_name: Ганімед",
+    "aliases: [Ganymede, Ганімед Станція]",
+    "location_type: space station",
+    "---",
+    "Великий супутник Юпітера. Штаб-квартира дії.",
+  ].join("\n"),
 };
 
 describe("LocalToolExecutor — list_chapters (hybrid → file scan)", () => {
@@ -183,6 +202,67 @@ describe("LocalToolExecutor — get_chapter (hybrid → file scan)", () => {
   it("rejects non-numeric input", async () => {
     const out = await tools.get_chapter({ chapter_number: NaN });
     expect(out).toMatch(/provide a numeric/i);
+  });
+});
+
+describe("LocalToolExecutor — list_characters profile markers", () => {
+  const tools = new LocalToolExecutor(makeApp(FILES), "");
+
+  it("includes Рей Нансен with 'profile' marker from characters/", async () => {
+    const out = await tools.list_characters({});
+    expect(out).toContain("Рей Нансен");
+    expect(out).toMatch(/Рей Нансен.*profile/);
+  });
+});
+
+describe("LocalToolExecutor — search_by_character alias matching", () => {
+  const tools = new LocalToolExecutor(makeApp(FILES), "");
+
+  it("finds the profile via alias 'Rey' and prepends a Profile notice", async () => {
+    const out = await tools.search_by_character({ name: "Rey" });
+    expect(out).toMatch(/Profile:/i);
+    expect(out).toContain("Рей Нансен.md");
+    expect(out).toContain("read_note");
+  });
+});
+
+describe("LocalToolExecutor — list_locations", () => {
+  const tools = new LocalToolExecutor(makeApp(FILES), "");
+
+  it("includes Ганімед from the locations/ profile", async () => {
+    const out = await tools.list_locations({});
+    expect(out).toContain("Ганімед");
+  });
+
+  it("includes chapter-derived locations", async () => {
+    const out = await tools.list_locations({});
+    expect(out).toContain("Ganymede Station");
+    expect(out).toContain("Corridor B");
+  });
+
+  it("marks Ганімед with 'profile'", async () => {
+    const out = await tools.list_locations({});
+    expect(out).toMatch(/Ганімед.*profile/);
+  });
+});
+
+describe("LocalToolExecutor — read_note resolves across subfolders", () => {
+  const tools = new LocalToolExecutor(makeApp(FILES), "");
+
+  it("resolves a file in locations/ by bare filename", async () => {
+    const out = await tools.read_note({ filename: "Ганімед.md" });
+    expect(out).toContain("Великий супутник Юпітера");
+    expect(out).toMatch(/^\s*1:/m);
+  });
+
+  it("resolves a file in characters/ by bare filename", async () => {
+    const out = await tools.read_note({ filename: "Рей Нансен.md" });
+    expect(out).toContain("головний герой");
+  });
+
+  it("returns not-found for a missing file", async () => {
+    const out = await tools.read_note({ filename: "nobody.md" });
+    expect(out).toMatch(/file not found/i);
   });
 });
 
