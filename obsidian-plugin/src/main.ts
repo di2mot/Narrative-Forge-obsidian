@@ -2,7 +2,7 @@
  * Narrative Forge — main Obsidian plugin entry point.
  */
 
-import { Notice, Plugin, WorkspaceLeaf, TFile, Modal, Setting, normalizePath, FileSystemAdapter } from "obsidian";
+import { Notice, Plugin, WorkspaceLeaf, TFile, Modal, Setting, normalizePath, FileSystemAdapter, MarkdownView } from "obsidian";
 import { NarrativeAPI } from "./api";
 import type { Character } from "./api";
 import { BackendManager } from "./backend";
@@ -903,6 +903,11 @@ Change in \`.narrative-book.json\` if running on a different port.
   async activateChat(): Promise<void> {
     const { workspace } = this.app;
 
+    // Capture selection BEFORE revealLeaf shifts focus away from the editor.
+    // At this point the markdown editor is still active, so getSelection() is reliable.
+    const mdView = workspace.getActiveViewOfType(MarkdownView);
+    const preSelection = mdView?.editor.getSelection() ?? "";
+
     let leaf = workspace.getLeavesOfType(NarrativeChatView.VIEW_TYPE)[0];
 
     if (!leaf) {
@@ -916,6 +921,10 @@ Change in \`.narrative-book.json\` if running on a different port.
     }
 
     workspace.revealLeaf(leaf);
+
+    if (preSelection && leaf.view instanceof NarrativeChatView) {
+      leaf.view.capturedSelection = preSelection;
+    }
   }
 
   async activateTimeline(): Promise<void> {

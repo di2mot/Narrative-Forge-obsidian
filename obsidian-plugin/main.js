@@ -51692,6 +51692,8 @@ Change in \`.narrative-book.json\` if running on a different port.
   }
   async activateChat() {
     const { workspace } = this.app;
+    const mdView = workspace.getActiveViewOfType(import_obsidian14.MarkdownView);
+    const preSelection = mdView?.editor.getSelection() ?? "";
     let leaf = workspace.getLeavesOfType(NarrativeChatView.VIEW_TYPE)[0];
     if (!leaf) {
       const rightLeaf = workspace.getRightLeaf(false);
@@ -51704,6 +51706,9 @@ Change in \`.narrative-book.json\` if running on a different port.
       });
     }
     workspace.revealLeaf(leaf);
+    if (preSelection && leaf.view instanceof NarrativeChatView) {
+      leaf.view.capturedSelection = preSelection;
+    }
   }
   async activateTimeline() {
     const { workspace } = this.app;

@@ -11,10 +11,12 @@ Write your chapters in Obsidian, ask questions in natural language — the AI re
 - **Local vector search** — semantic search across all scenes runs inside Obsidian using Orama + Transformers.js (WebAssembly ONNX model). Your text never leaves your device during indexing.
 - **Incremental indexing** — only changed chapters are re-embedded on save. Large books (100+ chapters) re-index in under a second.
 - **Read and edit chapters from chat** — the AI calls tools to read your files before answering, and edits them using precise line/character coordinates (LSP-style, like VS Code).
-- **Write new scenes** — append new scenes with correct dialogue formatting directly from chat.
-- **Character and location lookup** — find every scene a character appears in.
+- **Write new scenes and create files** — append new scenes or create new character/location/world notes directly from chat.
+- **Character and location profiles** — put profile files in `characters/` and `locations/`. The AI finds aliases, prepends a profile notice, and reads the full bio on request.
+- **Timeline tracking** — mark in-world timestamps on chapters (`timeline:: Year 1, Day 15`). Ask the AI to set or list them across the whole book.
 - **Consistency checking** — ask "does this contradict anything said in chapter 3?"
 - **Story bible** — put world rules in `CLAUDE.md`, the AI follows them automatically.
+- **Selection context** — highlight text in the editor, switch to chat, and the AI receives the selected passage as context.
 - **Multi-provider** — Anthropic Claude, OpenAI, Google Gemini, or any local model via Ollama / LM Studio.
 
 ---
@@ -22,7 +24,7 @@ Write your chapters in Obsidian, ask questions in natural language — the AI re
 ## Architecture
 
 ```
-.md chapter files
+.md chapter files  (chapters/, characters/, locations/, world/, notes/)
        │
        ▼  (on save or manual import)
 Transformers.js  ──  Xenova/all-MiniLM-L6-v2 (ONNX, runs in Obsidian)
@@ -31,10 +33,10 @@ Transformers.js  ──  Xenova/all-MiniLM-L6-v2 (ONNX, runs in Obsidian)
 Orama vector DB  ──  persisted to .narrative-orama.json in your vault
        │
        ▼
-Local TS tools   ──  search_semantic, read_chapter, read_scene, edit_scene, write_scene
+Local TS tools   ──  18 tools: search, read, edit, write, list, timeline
        │
        ▼
-LLM provider     ──  Anthropic / OpenAI / Gemini / Ollama
+LLM provider     ──  Anthropic / OpenAI / Gemini / Ollama / LM Studio
        │
        ▼
 Obsidian chat panel
@@ -77,9 +79,9 @@ This produces `main.js` in `obsidian-plugin/`.
 ```bash
 # Replace /path/to/your/vault with your actual vault location
 mkdir -p "/path/to/your/vault/.obsidian/plugins/narrative-forge"
-cp obsidian-plugin/main.js     "/path/to/your/vault/.obsidian/plugins/narrative-forge/"
+cp obsidian-plugin/main.js       "/path/to/your/vault/.obsidian/plugins/narrative-forge/"
 cp obsidian-plugin/manifest.json "/path/to/your/vault/.obsidian/plugins/narrative-forge/"
-cp obsidian-plugin/styles.css  "/path/to/your/vault/.obsidian/plugins/narrative-forge/"
+cp obsidian-plugin/styles.css    "/path/to/your/vault/.obsidian/plugins/narrative-forge/"
 ```
 
 **Tip:** Set `NOS_VAULT_PLUGIN_DIR` to auto-deploy on every build:
@@ -104,7 +106,7 @@ Open **Settings → Narrative Forge** to configure the plugin.
 
 | Provider | Setting | Notes |
 |----------|---------|-------|
-| Anthropic (Claude) | Provider: `Anthropic`, paste API key | Recommended: `claude-opus-4-5` or `claude-3-5-sonnet-20241022` |
+| Anthropic (Claude) | Provider: `Anthropic`, paste API key | Recommended: `claude-opus-4-7` or `claude-sonnet-4-6` |
 | OpenAI | Provider: `OpenAI`, paste API key | Recommended: `gpt-4o` |
 | Google Gemini | Provider: `Gemini`, paste API key | Recommended: `gemini-1.5-pro-latest` |
 | Local (Ollama) | Provider: `Local LLM`, Base URL: `http://localhost:11434/v1` | Model must support tool calling |
@@ -150,17 +152,23 @@ Create this layout inside your vault:
 
 ```
 My Book/
-├── .narrative-book.json   ← created automatically by "Create new book" command
+├── .narrative-book.json     ← created automatically by "Create new book" command
+├── CLAUDE.md                ← story bible (read by AI on every message)
 ├── chapters/
 │   ├── 01-opening.md
 │   ├── 02-conflict.md
 │   └── 03-resolution.md
-├── notes/
-│   ├── characters.md      ← character profiles
-│   ├── world.md           ← world building
-│   └── timeline.md
-└── CLAUDE.md              ← story bible (read by AI on every message)
+├── characters/              ← one .md file per character (optional)
+│   ├── Rey.md
+│   └── Freya.md
+├── locations/               ← one .md file per location (optional)
+│   └── Ganymede Station.md
+├── world/                   ← world-building notes (optional)
+│   └── magic-system.md
+└── notes/                   ← general notes (optional)
 ```
+
+The AI reads from all of these folders. Profile files in `characters/` and `locations/` are matched against chapter mentions by name and alias — when the AI finds a character, it tells you if a profile exists and can read it on request.
 
 ### Creating a book
 
@@ -176,9 +184,6 @@ Use the command palette (`Ctrl/Cmd+P`) → **Narrative Forge: Create new book**.
 
 **Automatic re-import:**
 Enable **Auto-import on save** in settings. When you save a chapter file, only that file is re-indexed (incremental — unchanged chapters are skipped). The re-index completes in the background without freezing the UI.
-
-**Force full re-import:**
-Run **Narrative Forge: Import book** with the force option to clear the index and rebuild everything from scratch.
 
 ---
 
@@ -217,12 +222,43 @@ Two hours later they had their orders.
 |--------|---------|
 | YAML `---` frontmatter | Chapter metadata (`title`, `chapter`, `status`, `pov`, `word_target`) |
 | `location:: ...` | Scene location — propagates to all scenes until the next `---` |
-| `timeline:: ...` | In-story timestamp |
-| `characters:: Rey, Freya` | Characters present (auto-detected from dialogue too) |
+| `timeline:: ...` | In-story timestamp — set with `add_timeline_marker`, listed with `list_timeline` |
+| `characters:: Rey, Freya` | Characters present (also auto-detected from dialogue tags) |
 | `[character: Name] — text` | Dialogue line — the AI formats new dialogue in this style automatically |
 | `---` (alone on a line) | Scene break — starts a new scene, resets metadata |
 
 Metadata fields are optional. A plain `.md` file with just prose works fine — the AI will still index and search it.
+
+### Character profile format
+
+```markdown
+---
+type: character
+full_name: Rey Okafor
+aliases: [Rey, Рей]
+role: protagonist
+status: alive
+---
+
+34-year-old Nigerian-Brazilian pilot. Dry humor. Never swears.
+```
+
+Place this in `characters/Rey Okafor.md`. The AI detects it when you ask about "Rey" (via alias matching) and prepends a profile notice with a link to the file.
+
+### Location profile format
+
+```markdown
+---
+type: location
+full_name: Ganymede Station
+aliases: [Ganymede, The Station]
+location_type: space station
+---
+
+Neutral territory. No weapons allowed on the promenade.
+```
+
+Place this in `locations/Ganymede Station.md`.
 
 ---
 
@@ -266,6 +302,35 @@ Any change to `CLAUDE.md` automatically invalidates the AI's prompt cache so it 
 
 Open the chat panel (message bubble icon in ribbon) or run **Narrative Forge: Open Chat**.
 
+### Selection context
+
+Highlight any text in your editor, then open the chat — the selected text is automatically sent to the AI as context. You don't need to paste it manually.
+
+### Available AI tools
+
+The AI has 18 local tools it can call to work with your book:
+
+| Tool | What it does |
+|------|-------------|
+| `list_chapters` | List all chapters with number, title, status, word count |
+| `list_characters` | List all characters ranked by mentions; marks profile files |
+| `list_locations` | List all locations from chapters + `locations/` profiles |
+| `list_timeline` | List all in-world timestamps across chapters in order |
+| `add_timeline_marker` | Set `timeline::` on a chapter by number or filename |
+| `get_chapter` | Read a chapter by its `chapter:` frontmatter number |
+| `read_chapter` | Read any chapter file with line numbers |
+| `read_scene` | Read one scene from a chapter file |
+| `read_note` | Read any profile or note file (characters/, locations/, world/, notes/) |
+| `search_semantic` | Semantic similarity search across all scenes |
+| `search_by_character` | Find every scene featuring a character; detects profile aliases |
+| `search_by_location` | Find every scene at a location; detects profile aliases |
+| `edit_scene` | Replace a line range in a file (LSP-style coordinates) |
+| `write_scene` | Append a formatted scene block to a chapter |
+| `append_to_chapter` | Append raw text to a chapter file |
+| `create_note` | Create or overwrite any file (character profile, location, chapter, note) |
+| `get_book_info` | Chapter count and indexing status |
+| `reimport_book` | Trigger a re-index of the whole book |
+
 ### Example prompts
 
 ```
@@ -283,6 +348,15 @@ Edit the fight scene in chapter 2 — make Rey's dialogue shorter and more clipp
 ```
 Write a new scene at the end of chapter 4: Rey and Freya argue about the mission.
 Format dialogue correctly and set location to "Engine Room".
+```
+```
+Create a character profile for Велтурс — astronomer, specialist role.
+```
+```
+Set the timeline for chapter 1 to "Year 1, Day 1".
+```
+```
+Show me the world timeline.
 ```
 
 ### How editing works
@@ -367,25 +441,29 @@ NOS_VAULT_PLUGIN_DIR="/path/to/vault/.obsidian/plugins/narrative-forge" npm run 
 ```
 obsidian-plugin/src/
 ├── main.ts         # Plugin entry point, lifecycle, commands
-├── agent.ts        # LLM agents (Anthropic / OpenAI / Gemini), tool schemas
-├── tools.ts        # LocalToolExecutor — search, read, edit, write scene tools
+├── agent.ts        # LLM agent loop, tool schemas (18 tools), BASE_PROMPT
+├── tools.ts        # LocalToolExecutor — all 18 local tools
 ├── database.ts     # VectorDatabase (Orama + Transformers.js)
 ├── importer.ts     # importBookLocally — incremental hash-based re-indexing
 ├── parser.ts       # .md chapter parser → Chapter/Scene types
-├── chat.ts         # Chat panel UI
+├── chat.ts         # Chat panel UI, selection capture, streaming
 ├── sidebar.ts      # Sidebar UI (book info, import button)
 ├── settings.ts     # Settings tab and defaults
-├── backend.ts      # Optional Python backend manager
 └── ...
 ```
 
 ### Testing
 
-Obsidian API integration is tested manually inside Obsidian. Core logic (hash utilities, LSP edit functions) can be tested by importing the modules directly in a Node.js environment.
+```bash
+cd obsidian-plugin
+npm test    # runs 74 unit tests via Vitest
+```
+
+Tests cover: chapter/character/location listing, hybrid DB-first → file-scan fallback, search tools, profile alias matching, create/read/update note operations, timeline marker insertion and listing.
 
 ---
 
-## Optional: Python bridge (Claude CLI / Claude Pro)
+## Optional: Python bridge (Claude Pro / Claude Code CLI)
 
 If you want to use your **Claude Pro subscription** via the Claude Code CLI instead of paying per-token for API calls, run the Python bridge:
 
