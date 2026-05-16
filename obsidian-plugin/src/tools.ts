@@ -412,6 +412,78 @@ export class LocalToolExecutor {
     return `No chapter with number ${chapterNumber} found. Use list_chapters to see available chapters.`;
   }
 
+  async add_timeline_marker(args: {
+    filename?: string;
+    chapter_number?: number;
+    timeline: string;
+  }): Promise<string> {
+    if (!args.timeline?.trim()) return "Please provide a timeline value (e.g. 'Year 1, Day 15').";
+    const timelineVal = args.timeline.trim();
+
+    let file: TFile | null = null;
+    let displayLabel = "";
+
+    if (args.chapter_number !== undefined && !isNaN(args.chapter_number)) {
+      for (const f of this.getChapterFiles()) {
+        const content = await this.app.vault.read(f);
+        const fm = this.parseFrontmatter(content);
+        if (Number(fm.chapter) === args.chapter_number) {
+          file = f;
+          displayLabel = fm.title ? `Chapter ${args.chapter_number}: ${fm.title}` : f.basename;
+          break;
+        }
+      }
+      if (!file) return `No chapter with number ${args.chapter_number} found.`;
+    } else if (args.filename) {
+      file = this.getFile(args.filename);
+      if (!file) return `File not found: ${args.filename}. Available folders: characters/, locations/, world/, notes/, chapters/`;
+      const content = await this.app.vault.read(file);
+      const fm = this.parseFrontmatter(content);
+      displayLabel = fm.title ? `${fm.title} (${file.basename})` : file.basename;
+    } else {
+      return "Please provide filename or chapter_number.";
+    }
+
+    await this.app.vault.process(file, (data) => {
+      if (/^timeline::/m.test(data)) {
+        return data.replace(/^timeline::.*$/m, `timeline:: ${timelineVal}`);
+      }
+      const fmMatch = data.match(/^---\n[\s\S]*?\n---\n/);
+      if (fmMatch) {
+        const end = fmMatch[0].length;
+        return data.slice(0, end) + `timeline:: ${timelineVal}\n` + data.slice(end);
+      }
+      return `timeline:: ${timelineVal}\n` + data;
+    });
+
+    return `Timeline set: **${timelineVal}** on ${file.path} (${displayLabel}).`;
+  }
+
+  async list_timeline(_args: unknown): Promise<string> {
+    const entries: Array<{ timeline: string; label: string; path: string }> = [];
+
+    for (const f of this.getChapterFiles()) {
+      const content = await this.app.vault.read(f);
+      const fm = this.parseFrontmatter(content);
+      const inlineMatch = content.match(/^timeline::\s*(.+)$/m);
+      const timelineVal = inlineMatch
+        ? inlineMatch[1].trim()
+        : (typeof fm.timeline === "string" ? fm.timeline : undefined);
+      if (!timelineVal) continue;
+      const label = fm.title
+        ? `Chapter ${fm.chapter ?? "?"}: ${fm.title}`
+        : f.basename;
+      entries.push({ timeline: timelineVal, label, path: f.path });
+    }
+
+    if (entries.length === 0) {
+      return "No timeline markers found. Use add_timeline_marker to set in-world timestamps on chapters.";
+    }
+
+    const lines = entries.map((e) => `- **${e.timeline}** — ${e.label} (\`${e.path}\`)`);
+    return `World Timeline (${entries.length} entries, chapter order):\n\n${lines.join("\n")}`;
+  }
+
   async reimport_book(_args: unknown): Promise<string> {
     // Trigger the plugin's existing "Import book" command rather than calling
     // importBookLocally directly — that keeps the cache + saveData logic in

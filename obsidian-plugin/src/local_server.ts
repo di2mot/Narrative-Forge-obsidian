@@ -60,6 +60,10 @@ export class LocalServer {
               result = await executor.list_characters(input);
             } else if (toolName === "list_locations") {
               result = await executor.list_locations(input);
+            } else if (toolName === "add_timeline_marker") {
+              result = await executor.add_timeline_marker(input as any);
+            } else if (toolName === "list_timeline") {
+              result = await executor.list_timeline(input);
             } else if (toolName === "read_note") {
               result = await executor.read_note(input as any);
             } else if (toolName === "create_note") {

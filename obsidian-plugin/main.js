@@ -20276,6 +20276,24 @@ var TOOL_DEFINITIONS = [
     }
   },
   {
+    name: "add_timeline_marker",
+    description: "Set an in-world timestamp on a chapter (e.g. 'Year 1, Day 15', 'Spring 1105'). Writes `timeline:: <value>` as Dataview inline metadata at the top of the chapter file. Use chapter_number OR filename.",
+    input_schema: {
+      type: "object",
+      properties: {
+        chapter_number: { type: "integer", description: "Chapter number from frontmatter `chapter:`. Use this OR filename." },
+        filename: { type: "string", description: "File path relative to book folder. Use this OR chapter_number." },
+        timeline: { type: "string", description: "In-world timestamp string, e.g. 'Year 1, Day 15' or 'Spring 1105'." }
+      },
+      required: ["timeline"]
+    }
+  },
+  {
+    name: "list_timeline",
+    description: "List all in-world timeline markers across chapters in chapter-file order. Reads `timeline::` Dataview metadata (or YAML `timeline:` frontmatter as fallback) from each chapter file.",
+    input_schema: { type: "object", properties: {} }
+  },
+  {
     name: "get_chapter",
     description: "Read the full chapter file matching a given chapter number (from frontmatter `chapter:`). Returned with file-relative line numbers; suitable for editing with edit_scene.",
     input_schema: {
@@ -20314,6 +20332,8 @@ The author's book may contain these subfolders alongside \`chapters/\`:
 - \`list_chapters\` \u2014 lists every chapter file with number, title, status, and word count. Use this to discover filenames before \`read_chapter\`.
 - \`list_characters\` \u2014 lists every character in the book (chapters + characters/ profiles), ranked by mentions. Entries marked ", profile" have a dedicated profile file.
 - \`list_locations\` \u2014 lists every location in the book (chapters + locations/ profiles). Entries marked ", profile" have a dedicated profile file.
+- \`add_timeline_marker\` \u2014 set an in-world timestamp on a chapter (e.g. 'Year 1, Day 15'). Use when the author tells you when something happens.
+- \`list_timeline\` \u2014 show every chapter with its in-world timestamp, in chapter order.
 - \`search_semantic\` \u2014 semantic similarity search across all scenes. Use this to find relevant context before writing.
 - \`search_by_character\` \u2014 find every scene featuring a character; also checks characters/ aliases and prepends a profile notice when found.
 - \`search_by_location\` \u2014 find every scene at a location; also checks locations/ aliases and prepends a profile notice when found.
@@ -20415,7 +20435,9 @@ var LOCAL_TOOL_NAMES = /* @__PURE__ */ new Set([
   "list_locations",
   "search_by_character",
   "search_by_location",
-  "get_chapter"
+  "get_chapter",
+  "add_timeline_marker",
+  "list_timeline"
 ]);
 async function executeTools(toolUses, localTools, api, bookDir) {
   const toolResultsContent = [];
@@ -49299,6 +49321,69 @@ ${addLineNumbers(content)}`;
     }
     return `No chapter with number ${chapterNumber} found. Use list_chapters to see available chapters.`;
   }
+  async add_timeline_marker(args) {
+    if (!args.timeline?.trim())
+      return "Please provide a timeline value (e.g. 'Year 1, Day 15').";
+    const timelineVal = args.timeline.trim();
+    let file = null;
+    let displayLabel = "";
+    if (args.chapter_number !== void 0 && !isNaN(args.chapter_number)) {
+      for (const f2 of this.getChapterFiles()) {
+        const content = await this.app.vault.read(f2);
+        const fm2 = this.parseFrontmatter(content);
+        if (Number(fm2.chapter) === args.chapter_number) {
+          file = f2;
+          displayLabel = fm2.title ? `Chapter ${args.chapter_number}: ${fm2.title}` : f2.basename;
+          break;
+        }
+      }
+      if (!file)
+        return `No chapter with number ${args.chapter_number} found.`;
+    } else if (args.filename) {
+      file = this.getFile(args.filename);
+      if (!file)
+        return `File not found: ${args.filename}. Available folders: characters/, locations/, world/, notes/, chapters/`;
+      const content = await this.app.vault.read(file);
+      const fm2 = this.parseFrontmatter(content);
+      displayLabel = fm2.title ? `${fm2.title} (${file.basename})` : file.basename;
+    } else {
+      return "Please provide filename or chapter_number.";
+    }
+    await this.app.vault.process(file, (data) => {
+      if (/^timeline::/m.test(data)) {
+        return data.replace(/^timeline::.*$/m, `timeline:: ${timelineVal}`);
+      }
+      const fmMatch = data.match(/^---\n[\s\S]*?\n---\n/);
+      if (fmMatch) {
+        const end = fmMatch[0].length;
+        return data.slice(0, end) + `timeline:: ${timelineVal}
+` + data.slice(end);
+      }
+      return `timeline:: ${timelineVal}
+` + data;
+    });
+    return `Timeline set: **${timelineVal}** on ${file.path} (${displayLabel}).`;
+  }
+  async list_timeline(_args) {
+    const entries = [];
+    for (const f2 of this.getChapterFiles()) {
+      const content = await this.app.vault.read(f2);
+      const fm2 = this.parseFrontmatter(content);
+      const inlineMatch = content.match(/^timeline::\s*(.+)$/m);
+      const timelineVal = inlineMatch ? inlineMatch[1].trim() : typeof fm2.timeline === "string" ? fm2.timeline : void 0;
+      if (!timelineVal)
+        continue;
+      const label = fm2.title ? `Chapter ${fm2.chapter ?? "?"}: ${fm2.title}` : f2.basename;
+      entries.push({ timeline: timelineVal, label, path: f2.path });
+    }
+    if (entries.length === 0) {
+      return "No timeline markers found. Use add_timeline_marker to set in-world timestamps on chapters.";
+    }
+    const lines = entries.map((e2) => `- **${e2.timeline}** \u2014 ${e2.label} (\`${e2.path}\`)`);
+    return `World Timeline (${entries.length} entries, chapter order):
+
+${lines.join("\n")}`;
+  }
   async reimport_book(_args) {
     const cmd = this.app.commands;
     if (cmd?.executeCommandById) {
@@ -50084,7 +50169,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
     new import_obsidian8.Setting(containerEl).setName("About").setHeading();
     const infoDiv = containerEl.createEl("div", { cls: "narrative-settings-info" });
     infoDiv.createEl("p", {
-      text: "Narrative Forge v0.8.0 \u2014 AI-powered writing assistant for fiction authors."
+      text: "Narrative Forge v0.9.0 \u2014 AI-powered writing assistant for fiction authors."
     });
     infoDiv.createEl("p", {
       text: "Start the backend with: uvicorn narrative_os.server:app --reload",
@@ -50733,6 +50818,10 @@ var LocalServer = class {
               result = await executor.list_characters(input);
             } else if (toolName === "list_locations") {
               result = await executor.list_locations(input);
+            } else if (toolName === "add_timeline_marker") {
+              result = await executor.add_timeline_marker(input);
+            } else if (toolName === "list_timeline") {
+              result = await executor.list_timeline(input);
             } else if (toolName === "read_note") {
               result = await executor.read_note(input);
             } else if (toolName === "create_note") {

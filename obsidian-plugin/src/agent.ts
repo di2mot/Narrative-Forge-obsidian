@@ -281,6 +281,24 @@ const TOOL_DEFINITIONS: Anthropic.Tool[] = [
     },
   },
   {
+    name: "add_timeline_marker",
+    description: "Set an in-world timestamp on a chapter (e.g. 'Year 1, Day 15', 'Spring 1105'). Writes `timeline:: <value>` as Dataview inline metadata at the top of the chapter file. Use chapter_number OR filename.",
+    input_schema: {
+      type: "object",
+      properties: {
+        chapter_number: { type: "integer", description: "Chapter number from frontmatter `chapter:`. Use this OR filename." },
+        filename: { type: "string", description: "File path relative to book folder. Use this OR chapter_number." },
+        timeline: { type: "string", description: "In-world timestamp string, e.g. 'Year 1, Day 15' or 'Spring 1105'." },
+      },
+      required: ["timeline"],
+    },
+  },
+  {
+    name: "list_timeline",
+    description: "List all in-world timeline markers across chapters in chapter-file order. Reads `timeline::` Dataview metadata (or YAML `timeline:` frontmatter as fallback) from each chapter file.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
     name: "get_chapter",
     description: "Read the full chapter file matching a given chapter number (from frontmatter `chapter:`). Returned with file-relative line numbers; suitable for editing with edit_scene.",
     input_schema: {
@@ -324,6 +342,8 @@ The author's book may contain these subfolders alongside \`chapters/\`:
 - \`list_chapters\` — lists every chapter file with number, title, status, and word count. Use this to discover filenames before \`read_chapter\`.
 - \`list_characters\` — lists every character in the book (chapters + characters/ profiles), ranked by mentions. Entries marked ", profile" have a dedicated profile file.
 - \`list_locations\` — lists every location in the book (chapters + locations/ profiles). Entries marked ", profile" have a dedicated profile file.
+- \`add_timeline_marker\` — set an in-world timestamp on a chapter (e.g. 'Year 1, Day 15'). Use when the author tells you when something happens.
+- \`list_timeline\` — show every chapter with its in-world timestamp, in chapter order.
 - \`search_semantic\` — semantic similarity search across all scenes. Use this to find relevant context before writing.
 - \`search_by_character\` — find every scene featuring a character; also checks characters/ aliases and prepends a profile notice when found.
 - \`search_by_location\` — find every scene at a location; also checks locations/ aliases and prepends a profile notice when found.
@@ -416,7 +436,7 @@ const LOCAL_TOOL_NAMES = new Set([
   "read_scene", "read_chapter", "read_note", "create_note", "edit_scene", "write_scene",
   "append_to_chapter", "search_semantic", "get_book_info",
   "list_chapters", "list_characters", "list_locations", "search_by_character",
-  "search_by_location", "get_chapter",
+  "search_by_location", "get_chapter", "add_timeline_marker", "list_timeline",
 ]);
 
 async function executeTools(toolUses: Array<{ id: string; name: string; input: any }>, localTools: any, api: any, bookDir: string): Promise<Anthropic.ToolResultBlockParam[]> {

@@ -51,6 +51,9 @@ function makeApp(files: Record<string, string>): any {
       modify: async (file: TFile, content: string) => {
         store[file.path] = content;
       },
+      process: async (file: TFile, fn: (data: string) => string | Promise<string>) => {
+        store[file.path] = await fn(store[file.path] ?? "");
+      },
     },
     // Expose store for test assertions
     _store: store,
@@ -313,6 +316,75 @@ describe("LocalToolExecutor — create_note", () => {
     const tools = new LocalToolExecutor(makeApp(FILES), "");
     const out = await tools.create_note({ filename: "", content: "x" });
     expect(out).toMatch(/provide/i);
+  });
+});
+
+describe("LocalToolExecutor — add_timeline_marker", () => {
+  it("inserts timeline:: after frontmatter when none exists", async () => {
+    const app = makeApp(FILES);
+    const tools = new LocalToolExecutor(app, "");
+    // 03-engine.md has no timeline:: line
+    const out = await tools.add_timeline_marker({ filename: "chapters/03-engine.md", timeline: "Year 1, Day 5" });
+    expect(out).toMatch(/year 1, day 5/i);
+    expect(app._store["chapters/03-engine.md"]).toContain("timeline:: Year 1, Day 5");
+  });
+
+  it("replaces existing timeline:: when one exists", async () => {
+    const app = makeApp(FILES);
+    const tools = new LocalToolExecutor(app, "");
+    // 02-corridor.md already has timeline:: Day 1, evening
+    await tools.add_timeline_marker({ filename: "chapters/02-corridor.md", timeline: "Year 1, Night 1" });
+    const content = app._store["chapters/02-corridor.md"];
+    expect(content).toContain("timeline:: Year 1, Night 1");
+    expect(content).not.toContain("timeline:: Day 1, evening");
+  });
+
+  it("works by chapter_number matching frontmatter", async () => {
+    const app = makeApp(FILES);
+    const tools = new LocalToolExecutor(app, "");
+    const out = await tools.add_timeline_marker({ chapter_number: 3, timeline: "Year 1, Day 5" });
+    expect(out).toContain("03-engine.md");
+    expect(app._store["chapters/03-engine.md"]).toContain("timeline:: Year 1, Day 5");
+  });
+
+  it("returns error when timeline is empty", async () => {
+    const tools = new LocalToolExecutor(makeApp(FILES), "");
+    const out = await tools.add_timeline_marker({ filename: "chapters/03-engine.md", timeline: "" });
+    expect(out).toMatch(/provide/i);
+  });
+
+  it("returns not-found when chapter_number has no match", async () => {
+    const tools = new LocalToolExecutor(makeApp(FILES), "");
+    const out = await tools.add_timeline_marker({ chapter_number: 99, timeline: "Year 1" });
+    expect(out).toMatch(/no chapter with number 99/i);
+  });
+});
+
+describe("LocalToolExecutor — list_timeline", () => {
+  it("returns entries for chapters that have timeline:: metadata", async () => {
+    const tools = new LocalToolExecutor(makeApp(FILES), "");
+    const out = await tools.list_timeline({});
+    expect(out).toContain("Day 1");
+    expect(out).toContain("01-arrival.md");
+    expect(out).toContain("Day 1, evening");
+    expect(out).toContain("02-corridor.md");
+  });
+
+  it("skips chapters with no timeline:: (03-engine.md, 04-prologue.md)", async () => {
+    const tools = new LocalToolExecutor(makeApp(FILES), "");
+    const out = await tools.list_timeline({});
+    // Only chapters with timeline should appear
+    expect(out).not.toMatch(/03-engine\.md.*\n.*04-prologue/);
+    // engine.md may appear if it gets a timeline, but in base FILES it has none
+    const lines = out.split("\n").filter((l) => l.startsWith("- "));
+    expect(lines.length).toBe(2);
+  });
+
+  it("returns the no-markers hint when no chapter has a timeline", async () => {
+    const emptyFiles = { "chapters/no-time.md": "---\nchapter: 1\ntitle: NoTime\n---\nContent." };
+    const tools = new LocalToolExecutor(makeApp(emptyFiles), "");
+    const out = await tools.list_timeline({});
+    expect(out).toMatch(/no timeline markers/i);
   });
 });
 
