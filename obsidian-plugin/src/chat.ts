@@ -168,8 +168,13 @@ export class NarrativeChatView extends ItemView {
     const relativePath = view?.file?.path ?? this.plugin.lastActiveMdPath ?? "";
     const filePath = vaultPath && relativePath ? `${vaultPath}/${relativePath}` : relativePath;
 
-    const selection = this.capturedSelection ?? view?.editor.getSelection() ?? "";
+    const editorSel = view?.editor.getSelection() ?? "";
+    // Priority: explicit per-click capture > workspace-level snapshot > current editor.
+    // The workspace snapshot is the most reliable since it fires on every leaf change.
+    const selection = this.capturedSelection || this.plugin.lastEditorSelection || editorSel;
+    console.log(`[NF] getContext — capturedSelection: ${JSON.stringify(this.capturedSelection)} | lastEditorSelection: ${JSON.stringify(this.plugin.lastEditorSelection)} | editorSel: ${JSON.stringify(editorSel)} | using: ${JSON.stringify(selection)}`);
     this.capturedSelection = null;
+    this.plugin.lastEditorSelection = "";
     return {
       fileContent: view?.editor.getValue() ?? "",
       selection,

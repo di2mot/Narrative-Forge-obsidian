@@ -48712,11 +48712,14 @@ function resolveEmbeddingModel(setting) {
     return MULTILINGUAL_MODEL;
   return setting;
 }
+var DB_SCHEMA_VERSION = 2;
 var VectorDatabase = class {
   db = null;
   embedder = null;
   currentModelName = MULTILINGUAL_MODEL;
   initPromise = null;
+  /** True when the persisted DB had an incompatible schema and was discarded. */
+  wasMigrated = false;
   async init(modelName) {
     const resolved = modelName ? resolveEmbeddingModel(modelName) : this.currentModelName;
     if (resolved !== this.currentModelName) {
@@ -48904,9 +48907,10 @@ var VectorDatabase = class {
     if (!this.db)
       return;
     try {
-      const serialized = await persist(this.db, "json");
+      const oramaJson = await persist(this.db, "json");
+      const wrapper = JSON.stringify({ schema_version: DB_SCHEMA_VERSION, db: oramaJson });
       const dbPath = vaultRelBookDir ? `${vaultRelBookDir}/.narrative-orama.json` : ".narrative-orama.json";
-      await app.vault.adapter.write(dbPath, serialized);
+      await app.vault.adapter.write(dbPath, wrapper);
     } catch (e2) {
       console.error("Failed to save Orama DB:", e2);
     }
@@ -48921,8 +48925,24 @@ var VectorDatabase = class {
     const dbPath = vaultRelBookDir ? `${vaultRelBookDir}/.narrative-orama.json` : ".narrative-orama.json";
     if (await app.vault.adapter.exists(dbPath)) {
       try {
-        const serialized = await app.vault.adapter.read(dbPath);
-        this.db = await restore("json", serialized);
+        const raw = await app.vault.adapter.read(dbPath);
+        let oramaJson = raw;
+        let schemaOk = false;
+        try {
+          const wrapper = JSON.parse(raw);
+          if (wrapper.schema_version === DB_SCHEMA_VERSION && typeof wrapper.db === "string") {
+            oramaJson = wrapper.db;
+            schemaOk = true;
+          }
+        } catch {
+        }
+        if (!schemaOk) {
+          console.warn("[NF] Orama DB schema version mismatch \u2014 rebuilding index from scratch");
+          this.wasMigrated = true;
+          await this.init(modelName);
+          return;
+        }
+        this.db = await restore("json", oramaJson);
         if (!this.embedder) {
           await this._doInit();
         }
@@ -49711,8 +49731,11 @@ var _NarrativeChatView = class extends import_obsidian7.ItemView {
     const view = this.findActiveMarkdownView();
     const relativePath = view?.file?.path ?? this.plugin.lastActiveMdPath ?? "";
     const filePath = vaultPath && relativePath ? `${vaultPath}/${relativePath}` : relativePath;
-    const selection = this.capturedSelection ?? view?.editor.getSelection() ?? "";
+    const editorSel = view?.editor.getSelection() ?? "";
+    const selection = this.capturedSelection || this.plugin.lastEditorSelection || editorSel;
+    console.log(`[NF] getContext \u2014 capturedSelection: ${JSON.stringify(this.capturedSelection)} | lastEditorSelection: ${JSON.stringify(this.plugin.lastEditorSelection)} | editorSel: ${JSON.stringify(editorSel)} | using: ${JSON.stringify(selection)}`);
     this.capturedSelection = null;
+    this.plugin.lastEditorSelection = "";
     return {
       fileContent: view?.editor.getValue() ?? "",
       selection,
@@ -50169,7 +50192,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
     new import_obsidian8.Setting(containerEl).setName("About").setHeading();
     const infoDiv = containerEl.createEl("div", { cls: "narrative-settings-info" });
     infoDiv.createEl("p", {
-      text: "Narrative Forge v0.9.0 \u2014 AI-powered writing assistant for fiction authors."
+      text: "Narrative Forge v0.9.1 \u2014 AI-powered writing assistant for fiction authors."
     });
     infoDiv.createEl("p", {
       text: "Start the backend with: uvicorn narrative_os.server:app --reload",
@@ -51038,6 +51061,10 @@ var NarrativePlugin = class extends import_obsidian14.Plugin {
   reindexInProgress = false;
   lastActiveMdPath = null;
   // last focused .md file path (vault-relative)
+  /** Most recent non-empty editor selection. Captured on active-leaf-change so that
+   *  chat can read it after focus has moved away from the editor. */
+  lastEditorSelection = "";
+  previousLeaf = null;
   getCurrentBookRoot() {
     return this.currentBookRoot;
   }
@@ -51137,6 +51164,24 @@ var NarrativePlugin = class extends import_obsidian14.Plugin {
         if (file instanceof import_obsidian14.TFile) {
           void this.onActiveFileChange(file);
         }
+      })
+    );
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", (newLeaf) => {
+        const prev = this.previousLeaf;
+        const prevType = prev?.view?.getViewType?.() ?? "null";
+        const newType = newLeaf?.view?.getViewType?.() ?? "null";
+        let snapshot = "";
+        if (prev && prev !== newLeaf && prev.view instanceof import_obsidian14.MarkdownView) {
+          try {
+            snapshot = prev.view.editor.getSelection();
+            if (snapshot)
+              this.lastEditorSelection = snapshot;
+          } catch {
+          }
+        }
+        console.log(`[NF] leaf-change ${prevType} \u2192 ${newType} | snapshot: ${JSON.stringify(snapshot)} | lastEditorSelection: ${JSON.stringify(this.lastEditorSelection)}`);
+        this.previousLeaf = newLeaf;
       })
     );
     this.registerAutoImport();
@@ -51617,7 +51662,7 @@ Change in \`.narrative-book.json\` if running on a different port.
     await vectorDb.loadFromFile(this.app, bookRoot, this.settings.embeddingModel);
     try {
       const pluginData = await this.loadData() || {};
-      const bookCache = pluginData.fileHashes?.[absBookDir] ?? {};
+      const bookCache = vectorDb.wasMigrated ? {} : pluginData.fileHashes?.[absBookDir] ?? {};
       const { updated_cache } = await importBookLocally(
         this.app,
         absBookDir,

@@ -24,11 +24,17 @@ export interface SceneMetadata {
   filename: string;
 }
 
+// Bump when the Orama schema changes incompatibly so old persisted DBs are
+// automatically detected and rebuilt rather than crashing on first insert.
+const DB_SCHEMA_VERSION = 2;
+
 export class VectorDatabase {
   private db: any = null;
   private embedder: any = null;
   private currentModelName: string = MULTILINGUAL_MODEL;
   private initPromise: Promise<void> | null = null;
+  /** True when the persisted DB had an incompatible schema and was discarded. */
+  wasMigrated = false;
 
   async init(modelName?: string): Promise<void> {
     const resolved = modelName ? resolveEmbeddingModel(modelName) : this.currentModelName;
@@ -225,9 +231,10 @@ export class VectorDatabase {
   async saveToFile(app: App, vaultRelBookDir: string) {
     if (!this.db) return;
     try {
-      const serialized = await persist(this.db, "json");
+      const oramaJson = await persist(this.db, "json");
+      const wrapper = JSON.stringify({ schema_version: DB_SCHEMA_VERSION, db: oramaJson });
       const dbPath = vaultRelBookDir ? `${vaultRelBookDir}/.narrative-orama.json` : ".narrative-orama.json";
-      await app.vault.adapter.write(dbPath, serialized as string);
+      await app.vault.adapter.write(dbPath, wrapper);
     } catch (e) {
       console.error("Failed to save Orama DB:", e);
     }
@@ -247,8 +254,28 @@ export class VectorDatabase {
 
     if (await app.vault.adapter.exists(dbPath)) {
       try {
-        const serialized = await app.vault.adapter.read(dbPath);
-        this.db = await restore("json", serialized) as any;
+        const raw = await app.vault.adapter.read(dbPath);
+
+        // Detect versioned wrapper vs old raw Orama JSON.
+        // Missing or mismatched schema_version → old schema → wipe and full-reindex.
+        let oramaJson: string = raw;
+        let schemaOk = false;
+        try {
+          const wrapper = JSON.parse(raw) as { schema_version?: number; db?: string };
+          if (wrapper.schema_version === DB_SCHEMA_VERSION && typeof wrapper.db === "string") {
+            oramaJson = wrapper.db;
+            schemaOk = true;
+          }
+        } catch { /* raw is not our wrapper — treat as old format */ }
+
+        if (!schemaOk) {
+          console.warn("[NF] Orama DB schema version mismatch — rebuilding index from scratch");
+          this.wasMigrated = true;
+          await this.init(modelName);
+          return;
+        }
+
+        this.db = await restore("json", oramaJson) as any;
         // Load embedder without recreating the restored DB — reuse _doInit's WASM setup
         if (!this.embedder) {
           await this._doInit();

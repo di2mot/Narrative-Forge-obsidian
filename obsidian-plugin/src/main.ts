@@ -106,6 +106,10 @@ export default class NarrativePlugin extends Plugin {
   private startupReindexDone = false;
   private reindexInProgress = false;
   lastActiveMdPath: string | null = null;  // last focused .md file path (vault-relative)
+  /** Most recent non-empty editor selection. Captured on active-leaf-change so that
+   *  chat can read it after focus has moved away from the editor. */
+  lastEditorSelection: string = "";
+  private previousLeaf: WorkspaceLeaf | null = null;
 
   getCurrentBookRoot(): string | null {
     return this.currentBookRoot;
@@ -268,6 +272,27 @@ export default class NarrativePlugin extends Plugin {
         if (file instanceof TFile) {
           void this.onActiveFileChange(file);
         }
+      })
+    );
+
+    // Snapshot editor selection whenever the active leaf changes. CM6 preserves
+    // state.selection across focus loss, so reading at this moment is reliable.
+    // This is the only capture that fires regardless of HOW the user switched
+    // leaves (tab click, ribbon, keyboard shortcut, etc.).
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", (newLeaf) => {
+        const prev = this.previousLeaf;
+        const prevType = prev?.view?.getViewType?.() ?? "null";
+        const newType = newLeaf?.view?.getViewType?.() ?? "null";
+        let snapshot = "";
+        if (prev && prev !== newLeaf && prev.view instanceof MarkdownView) {
+          try {
+            snapshot = prev.view.editor.getSelection();
+            if (snapshot) this.lastEditorSelection = snapshot;
+          } catch { /* leaf may be detached — ignore */ }
+        }
+        console.log(`[NF] leaf-change ${prevType} → ${newType} | snapshot: ${JSON.stringify(snapshot)} | lastEditorSelection: ${JSON.stringify(this.lastEditorSelection)}`);
+        this.previousLeaf = newLeaf;
       })
     );
 
@@ -826,7 +851,11 @@ Change in \`.narrative-book.json\` if running on a different port.
 
     try {
       const pluginData = (await this.loadData()) || {};
-      const bookCache: Record<string, FileHashEntry> = pluginData.fileHashes?.[absBookDir] ?? {};
+      // If the persisted DB had an incompatible schema, wasMigrated is set and we
+      // must do a full reindex (empty cache) so no chapters are left un-indexed.
+      const bookCache: Record<string, FileHashEntry> = vectorDb.wasMigrated
+        ? {}
+        : (pluginData.fileHashes?.[absBookDir] ?? {});
       const { updated_cache } = await importBookLocally(
         this.app, absBookDir, false, this.settings.embeddingModel, bookCache
       );
