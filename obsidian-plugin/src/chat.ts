@@ -238,7 +238,10 @@ export class NarrativeChatView extends ItemView {
         if (!apiKey && provider !== "local") {
            throw new Error(`API key is required for provider '${provider}'. Please set it in Narrative Forge settings.`);
         }
-        const localTools = new LocalToolExecutor(this.plugin.app, bookDir || "");
+        const localTools = new LocalToolExecutor(this.plugin.app, bookDir || "", {
+          reviewAiEdits: this.plugin.settings.reviewAiEdits,
+          pendingEditsRegistry: this.plugin.pendingEditsRegistry,
+        });
         const agent = createAgent(
           provider, 
           modelName, 

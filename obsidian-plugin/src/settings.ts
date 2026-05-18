@@ -20,6 +20,7 @@ export interface NarrativeSettings {
   localBaseUrl: string;
   modelName: string;
   autoImport: boolean;
+  reviewAiEdits: boolean;
   embeddingModel: "en" | "multilingual";
 }
 
@@ -36,6 +37,7 @@ export const DEFAULT_SETTINGS: NarrativeSettings = {
   localBaseUrl: "http://localhost:11434/v1",
   modelName: "",
   autoImport: true,
+  reviewAiEdits: true,
   embeddingModel: "multilingual",
 };
 
@@ -306,6 +308,20 @@ export class NarrativeSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("Review AI edits before applying")
+      .setDesc(
+        "Show proposed AI edits inline (red strikethrough for deletions, green for additions) with Apply / Reject buttons. Disable to auto-apply."
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.reviewAiEdits)
+          .onChange(async (value) => {
+            this.plugin.settings.reviewAiEdits = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
       .setName("Embedding model")
       .setDesc(
         "Model used to index and search your book. Use Multilingual for non-English text. " +
@@ -352,7 +368,7 @@ export class NarrativeSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("About").setHeading();
     const infoDiv = containerEl.createEl("div", { cls: "narrative-settings-info" });
     infoDiv.createEl("p", {
-      text: "Narrative Forge v0.9.1 — AI-powered writing assistant for fiction authors.",
+      text: "Narrative Forge v0.10.0 — AI-powered writing assistant for fiction authors.",
     });
     infoDiv.createEl("p", {
       text: "Start the backend with: uvicorn narrative_os.server:app --reload",

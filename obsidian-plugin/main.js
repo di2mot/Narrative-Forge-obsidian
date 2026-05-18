@@ -4488,7 +4488,7 @@ __export(main_exports, {
   default: () => NarrativePlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian14 = require("obsidian");
+var import_obsidian15 = require("obsidian");
 
 // src/api.ts
 var NarrativeAPI = class {
@@ -4905,12 +4905,334 @@ function buildNosDecorations(colorMap) {
   return plugin;
 }
 
+// src/pending_decorations.ts
+var import_state2 = require("@codemirror/state");
+var import_view2 = require("@codemirror/view");
+var forceUpdate = import_state2.StateEffect.define();
+var InsertWidget = class extends import_view2.WidgetType {
+  constructor(text) {
+    super();
+    this.text = text;
+  }
+  eq(other) {
+    return other.text === this.text;
+  }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "nf-pending-insert";
+    span.textContent = this.text;
+    return span;
+  }
+  ignoreEvent() {
+    return false;
+  }
+};
+var ActionsWidget = class extends import_view2.WidgetType {
+  constructor(id2, registry, filePath) {
+    super();
+    this.id = id2;
+    this.registry = registry;
+    this.filePath = filePath;
+  }
+  eq(other) {
+    return other.id === this.id;
+  }
+  toDOM() {
+    const wrap = document.createElement("span");
+    wrap.className = "nf-pending-actions";
+    const apply = document.createElement("button");
+    apply.className = "nf-pending-button nf-pending-apply";
+    apply.textContent = "Apply";
+    apply.addEventListener("mousedown", (e2) => {
+      e2.preventDefault();
+      e2.stopPropagation();
+      this.registry.resolve(this.id, "applied");
+    });
+    const reject = document.createElement("button");
+    reject.className = "nf-pending-button nf-pending-reject";
+    reject.textContent = "Reject";
+    reject.addEventListener("mousedown", (e2) => {
+      e2.preventDefault();
+      e2.stopPropagation();
+      this.registry.resolve(this.id, "rejected");
+    });
+    wrap.appendChild(apply);
+    wrap.appendChild(reject);
+    return wrap;
+  }
+  ignoreEvent() {
+    return false;
+  }
+};
+function buildPendingEditsPlugin(app, registry) {
+  return import_view2.ViewPlugin.fromClass(
+    class {
+      constructor(view) {
+        this.view = view;
+        this.filePath = this.resolveFilePath();
+        this.unsubscribe = registry.onChange((fp2) => {
+          if (fp2 !== this.filePath)
+            return;
+          this.view.dispatch({ effects: forceUpdate.of(null) });
+        });
+        this.rebuild();
+        this.updateDOM();
+      }
+      decorations = import_view2.Decoration.none;
+      unsubscribe = null;
+      scrollbarOverlay = null;
+      banner = null;
+      filePath = null;
+      update(update2) {
+        if (!this.filePath)
+          this.filePath = this.resolveFilePath();
+        const triggered = update2.transactions.some(
+          (tr2) => tr2.effects.some((e2) => e2.is(forceUpdate))
+        );
+        if (triggered || update2.docChanged || update2.viewportChanged) {
+          this.rebuild();
+          this.updateDOM();
+        }
+      }
+      destroy() {
+        if (this.unsubscribe)
+          this.unsubscribe();
+        this.scrollbarOverlay?.remove();
+        this.banner?.remove();
+      }
+      resolveFilePath() {
+        for (const leaf of app.workspace.getLeavesOfType("markdown")) {
+          const mdv = leaf.view;
+          if (mdv.editor?.cm === this.view) {
+            return mdv.file?.path ?? null;
+          }
+        }
+        return null;
+      }
+      rebuild() {
+        const edits = this.filePath ? registry.forFile(this.filePath) : [];
+        if (edits.length === 0) {
+          this.decorations = import_view2.Decoration.none;
+          return;
+        }
+        const doc = this.view.state.doc;
+        const items = [];
+        for (const edit of edits) {
+          if (edit.kind === "replace" && edit.range) {
+            const { startLine, startChar, endLine, endChar } = edit.range;
+            const sl2 = doc.line(Math.max(1, Math.min(startLine, doc.lines)));
+            const el2 = doc.line(Math.max(1, Math.min(endLine, doc.lines)));
+            const from = Math.min(sl2.from + startChar, sl2.to);
+            const to2 = Math.min(el2.from + endChar, el2.to);
+            if (from < to2) {
+              items.push([from, to2, import_view2.Decoration.mark({ class: "nf-pending-delete" })]);
+            }
+            const insertPos = Math.max(from, to2);
+            items.push([
+              insertPos,
+              insertPos,
+              import_view2.Decoration.widget({ widget: new InsertWidget(edit.newText), side: 1 })
+            ]);
+            items.push([
+              insertPos,
+              insertPos,
+              import_view2.Decoration.widget({
+                widget: new ActionsWidget(edit.id, registry, this.filePath),
+                side: 1
+              })
+            ]);
+          } else if (edit.kind === "append") {
+            const pos = doc.length;
+            items.push([
+              pos,
+              pos,
+              import_view2.Decoration.widget({
+                widget: new InsertWidget("\n\n" + edit.newText),
+                side: 1
+              })
+            ]);
+            items.push([
+              pos,
+              pos,
+              import_view2.Decoration.widget({
+                widget: new ActionsWidget(edit.id, registry, this.filePath),
+                side: 1
+              })
+            ]);
+          } else if (edit.kind === "create-file") {
+            if (doc.length > 0) {
+              items.push([0, doc.length, import_view2.Decoration.mark({ class: "nf-pending-create" })]);
+            }
+            items.push([
+              0,
+              0,
+              import_view2.Decoration.widget({
+                widget: new ActionsWidget(edit.id, registry, this.filePath),
+                side: -1
+              })
+            ]);
+          }
+        }
+        items.sort((a2, b2) => a2[0] - b2[0] || b2[1] - b2[0] - (a2[1] - a2[0]));
+        const builder = new import_state2.RangeSetBuilder();
+        for (const [from, to2, deco] of items) {
+          try {
+            builder.add(from, to2, deco);
+          } catch {
+          }
+        }
+        try {
+          this.decorations = builder.finish();
+        } catch {
+          this.decorations = import_view2.Decoration.none;
+        }
+      }
+      updateDOM() {
+        const edits = this.filePath ? registry.forFile(this.filePath) : [];
+        this.updateScrollbar(edits);
+        this.updateBanner(edits);
+      }
+      updateScrollbar(edits) {
+        if (!this.scrollbarOverlay) {
+          this.scrollbarOverlay = document.createElement("div");
+          this.scrollbarOverlay.className = "nf-pending-scrollbar-overlay";
+          this.view.scrollDOM.appendChild(this.scrollbarOverlay);
+        }
+        this.scrollbarOverlay.empty();
+        if (edits.length === 0)
+          return;
+        const docLines = Math.max(this.view.state.doc.lines, 1);
+        for (const edit of edits) {
+          const stripe = document.createElement("div");
+          stripe.className = "nf-pending-scrollbar-marker";
+          if (edit.kind === "replace" && edit.range) {
+            const pct = (edit.range.startLine - 1) / docLines * 100;
+            stripe.style.top = `${Math.min(pct, 92)}%`;
+          } else {
+            stripe.style.top = "94%";
+          }
+          this.scrollbarOverlay.appendChild(stripe);
+        }
+      }
+      updateBanner(edits) {
+        if (edits.length === 0) {
+          this.banner?.remove();
+          this.banner = null;
+          return;
+        }
+        if (!this.banner) {
+          this.banner = document.createElement("div");
+          this.banner.className = "nf-pending-banner";
+          this.view.dom.insertBefore(this.banner, this.view.scrollDOM);
+        }
+        this.banner.empty();
+        const label = document.createElement("span");
+        label.className = "nf-pending-banner-label";
+        label.textContent = `${edits.length} pending AI edit${edits.length > 1 ? "s" : ""}`;
+        const applyAll = document.createElement("button");
+        applyAll.className = "nf-pending-button nf-pending-apply";
+        applyAll.textContent = "Apply All";
+        applyAll.addEventListener("mousedown", (e2) => {
+          e2.preventDefault();
+          if (this.filePath)
+            registry.resolveAll(this.filePath, "applied");
+        });
+        const rejectAll = document.createElement("button");
+        rejectAll.className = "nf-pending-button nf-pending-reject";
+        rejectAll.textContent = "Reject All";
+        rejectAll.addEventListener("mousedown", (e2) => {
+          e2.preventDefault();
+          if (this.filePath)
+            registry.resolveAll(this.filePath, "rejected");
+        });
+        this.banner.appendChild(label);
+        this.banner.appendChild(applyAll);
+        this.banner.appendChild(rejectAll);
+      }
+    },
+    {
+      decorations: (v3) => v3.decorations
+    }
+  );
+}
+
+// src/pending_edits.ts
+var import_obsidian = require("obsidian");
+var PendingEditsRegistry = class {
+  byFile = /* @__PURE__ */ new Map();
+  resolvers = /* @__PURE__ */ new Map();
+  listeners = /* @__PURE__ */ new Set();
+  propose(edit, resolve) {
+    const list = this.byFile.get(edit.filePath) ?? [];
+    list.push(edit);
+    this.byFile.set(edit.filePath, list);
+    this.resolvers.set(edit.id, resolve);
+    this.notify(edit.filePath);
+  }
+  forFile(filePath) {
+    return this.byFile.get(filePath) ?? [];
+  }
+  resolve(id2, status) {
+    const resolver = this.resolvers.get(id2);
+    if (!resolver)
+      return;
+    let filePath;
+    for (const [fp2, edits] of this.byFile.entries()) {
+      const idx = edits.findIndex((e2) => e2.id === id2);
+      if (idx !== -1) {
+        filePath = fp2;
+        edits.splice(idx, 1);
+        if (edits.length === 0)
+          this.byFile.delete(fp2);
+        break;
+      }
+    }
+    this.resolvers.delete(id2);
+    resolver(status);
+    if (filePath)
+      this.notify(filePath);
+  }
+  resolveAll(filePath, status) {
+    const edits = this.byFile.get(filePath);
+    if (!edits)
+      return;
+    const ids = edits.map((e2) => e2.id);
+    for (const id2 of ids)
+      this.resolve(id2, status);
+  }
+  onChange(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+  notify(filePath) {
+    for (const l2 of this.listeners)
+      l2(filePath);
+  }
+};
+async function proposeWrite(app, registry, edit) {
+  const id2 = crypto.randomUUID();
+  const fullEdit = { ...edit, id: id2 };
+  const file = app.vault.getAbstractFileByPath(edit.filePath);
+  if (file instanceof import_obsidian.TFile) {
+    const existingLeaf = app.workspace.getLeavesOfType("markdown").find((l2) => l2.view.file?.path === edit.filePath);
+    if (existingLeaf) {
+      app.workspace.revealLeaf(existingLeaf);
+    } else {
+      const leaf = app.workspace.getLeaf("tab");
+      await leaf.openFile(file);
+    }
+  }
+  return new Promise((resolve) => {
+    registry.propose(fullEdit, resolve);
+  });
+}
+
 // src/context-menu.ts
-var import_obsidian2 = require("obsidian");
+var import_obsidian3 = require("obsidian");
 
 // src/event-modal.ts
-var import_obsidian = require("obsidian");
-var EventModal = class extends import_obsidian.Modal {
+var import_obsidian2 = require("obsidian");
+var EventModal = class extends import_obsidian2.Modal {
   constructor(app, onSubmit) {
     super(app);
     this.onSubmit = onSubmit;
@@ -4920,7 +5242,7 @@ var EventModal = class extends import_obsidian.Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.createEl("h2", { text: "Add timeline event" });
-    new import_obsidian.Setting(contentEl).setName("Title").setDesc("Required \u2014 short name for this event.").addText((text) => {
+    new import_obsidian2.Setting(contentEl).setName("Title").setDesc("Required \u2014 short name for this event.").addText((text) => {
       text.setPlaceholder("The Siege of Andruil").onChange((v3) => {
         this.event.title = v3.trim();
       });
@@ -4977,23 +5299,23 @@ var EventModal = class extends import_obsidian.Modal {
       const v3 = minuteInput.value.trim();
       this.event.minute = v3 ? parseInt(v3, 10) : void 0;
     });
-    new import_obsidian.Setting(contentEl).setName("Location").setDesc("Type a name \u2014 it will be wrapped in [[]] automatically.").addText((text) => {
+    new import_obsidian2.Setting(contentEl).setName("Location").setDesc("Type a name \u2014 it will be wrapped in [[]] automatically.").addText((text) => {
       text.setPlaceholder("Andruil").onChange((v3) => {
         this.event.location = v3.trim() ? `[[${v3.trim()}]]` : void 0;
       });
       return text;
     });
-    new import_obsidian.Setting(contentEl).setName("Characters").setDesc("Comma-separated names \u2014 each will be wrapped in [[]].").addText((text) => {
+    new import_obsidian2.Setting(contentEl).setName("Characters").setDesc("Comma-separated names \u2014 each will be wrapped in [[]].").addText((text) => {
       text.setPlaceholder("Artur, Sam").onChange((v3) => {
         this.event.characters = parseCharacters(v3);
       });
       return text;
     });
-    new import_obsidian.Setting(contentEl).addButton(
+    new import_obsidian2.Setting(contentEl).addButton(
       (btn) => btn.setButtonText("Add to timeline").setCta().onClick(() => {
         const title = this.event.title?.trim();
         if (!title) {
-          new import_obsidian.Notice("Please enter an event title.");
+          new import_obsidian2.Notice("Please enter an event title.");
           return;
         }
         const result = {
@@ -5022,7 +5344,7 @@ function parseCharacters(raw) {
 }
 
 // src/context-menu.ts
-var CharacterSuggestModal = class extends import_obsidian2.SuggestModal {
+var CharacterSuggestModal = class extends import_obsidian3.SuggestModal {
   onChoose;
   characters;
   constructor(app, characters, onChoose) {
@@ -5052,7 +5374,7 @@ var CharacterSuggestModal = class extends import_obsidian2.SuggestModal {
 };
 function assignCharacterToSelection(editor, char) {
   if (!editor.somethingSelected()) {
-    new import_obsidian2.Notice("Select some text first.");
+    new import_obsidian3.Notice("Select some text first.");
     return;
   }
   const cursor = editor.getCursor("from");
@@ -5062,7 +5384,7 @@ function assignCharacterToSelection(editor, char) {
   if (existingMatch) {
     const newLine = prefix + line.slice(existingMatch[0].length);
     editor.setLine(cursor.line, newLine);
-    new import_obsidian2.Notice(`Character changed to ${char.name}`);
+    new import_obsidian3.Notice(`Character changed to ${char.name}`);
   } else {
     const selFrom = editor.getCursor("from");
     const selTo = editor.getCursor("to");
@@ -5076,7 +5398,7 @@ function assignCharacterToSelection(editor, char) {
           editor.setLine(ln2, prefix + lineText);
         }
       }
-      new import_obsidian2.Notice(`Assigned ${char.name} to ${selTo.line - selFrom.line + 1} lines`);
+      new import_obsidian3.Notice(`Assigned ${char.name} to ${selTo.line - selFrom.line + 1} lines`);
     } else {
       const colOffset = selFrom.ch;
       const before = line.slice(0, colOffset);
@@ -5087,7 +5409,7 @@ function assignCharacterToSelection(editor, char) {
       } else {
         editor.setLine(cursor.line, before + prefix + selected + after);
       }
-      new import_obsidian2.Notice(`Assigned: ${char.name}`);
+      new import_obsidian3.Notice(`Assigned: ${char.name}`);
     }
   }
 }
@@ -5095,7 +5417,7 @@ async function addTimelineEntry(plugin, editor) {
   new EventModal(plugin.app, async (event) => {
     const bookRoot = plugin.getCurrentBookRoot();
     if (!bookRoot) {
-      new import_obsidian2.Notice("No book found for this file.");
+      new import_obsidian3.Notice("No book found for this file.");
       return;
     }
     const activeFile = plugin.app.workspace.getActiveFile();
@@ -5112,7 +5434,7 @@ async function addTimelineEntry(plugin, editor) {
 }
 async function updateTimelineFile(plugin, bookRoot, newEvent) {
   const vault = plugin.app.vault;
-  const timelinePath = (0, import_obsidian2.normalizePath)(`${bookRoot}/timeline.md`);
+  const timelinePath = (0, import_obsidian3.normalizePath)(`${bookRoot}/timeline.md`);
   let existing = "";
   try {
     existing = await vault.adapter.read(timelinePath);
@@ -5210,9 +5532,9 @@ ${tableRows.join("\n")}
     } else {
       await vault.create(timelinePath, content);
     }
-    new import_obsidian2.Notice("Timeline updated.");
+    new import_obsidian3.Notice("Timeline updated.");
   } catch (err) {
-    new import_obsidian2.Notice(`Failed to update timeline: ${err}`);
+    new import_obsidian3.Notice(`Failed to update timeline: ${err}`);
   }
 }
 function wrapWikilink(s2) {
@@ -5239,7 +5561,7 @@ function registerContextMenu(plugin, getCharacters, activateChat) {
                 chatView.capturedSelection = selection;
                 chatView.injectMessage("Please analyze this selected passage.");
               } else {
-                new import_obsidian2.Notice("Could not open chat panel.");
+                new import_obsidian3.Notice("Could not open chat panel.");
               }
             })
           );
@@ -5297,8 +5619,8 @@ function registerContextMenu(plugin, getCharacters, activateChat) {
 }
 
 // src/sidebar.ts
-var import_obsidian3 = require("obsidian");
-var _NarrativeSidebarView = class extends import_obsidian3.ItemView {
+var import_obsidian4 = require("obsidian");
+var _NarrativeSidebarView = class extends import_obsidian4.ItemView {
   plugin;
   activeTab = "characters";
   tabContentEl;
@@ -5508,7 +5830,7 @@ var _NarrativeSidebarView = class extends import_obsidian3.ItemView {
           return;
         const filePath = `${bookRoot}/characters/${char.name}.md`;
         const file = this.plugin.app.vault.getAbstractFileByPath(filePath);
-        if (file instanceof import_obsidian3.TFile) {
+        if (file instanceof import_obsidian4.TFile) {
           void this.plugin.app.workspace.getLeaf().openFile(file);
         }
       });
@@ -5569,7 +5891,7 @@ var _NarrativeSidebarView = class extends import_obsidian3.ItemView {
           const fm2 = this.plugin.app.metadataCache.getFileCache(f2)?.frontmatter ?? {};
           return (fm2.chapter ?? 0) === ch2.chapter && (fm2.title ?? f2.basename) === ch2.title;
         });
-        if (target instanceof import_obsidian3.TFile) {
+        if (target instanceof import_obsidian4.TFile) {
           void this.plugin.app.workspace.getLeaf().openFile(target);
         }
       });
@@ -5626,7 +5948,7 @@ var NarrativeSidebarView = _NarrativeSidebarView;
 __publicField(NarrativeSidebarView, "VIEW_TYPE", "narrative-sidebar");
 
 // src/chat.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // node_modules/@anthropic-ai/sdk/internal/tslib.mjs
 function __classPrivateFieldSet(receiver, state, value, kind, f2) {
@@ -20032,7 +20354,7 @@ var GoogleGenerativeAI = class {
 };
 
 // src/agent.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 var _toolCallSeq = 0;
 function makeNodeFetch() {
   return async function nodeFetch(input, init) {
@@ -20399,8 +20721,8 @@ If a CLAUDE.md file is appended below, it contains the canonical story bible: ch
 Rules from CLAUDE.md override your defaults. Always check CLAUDE.md before inventing character names, locations, or world details.`;
   let parts = [BASE_PROMPT];
   try {
-    const claudeMdPath = (0, import_obsidian4.normalizePath)(`${bookDir}/CLAUDE.md`);
-    const claudeMdParentPath = (0, import_obsidian4.normalizePath)(`${bookDir}/../CLAUDE.md`);
+    const claudeMdPath = (0, import_obsidian5.normalizePath)(`${bookDir}/CLAUDE.md`);
+    const claudeMdParentPath = (0, import_obsidian5.normalizePath)(`${bookDir}/../CLAUDE.md`);
     const getFileText = async (p2) => {
       const f2 = app.vault.getAbstractFileByPath(p2);
       if (f2)
@@ -20855,10 +21177,10 @@ function createAgent(provider, modelName, apiKey, localTools, api, app, localBas
 }
 
 // src/tools.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/parser.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 var DIALOGUE_RE = /^\[character:\s*([^\]]+)\]\s*[—–-]\s*(.*)/i;
 var DATAVIEW_RE = /^(\w+)::\s*(.+)$/;
 var WIKILINK_RE = /\[\[([^\]]+)\]\]/g;
@@ -20887,7 +21209,7 @@ function parseChapter(rawText, filename) {
   const fmMatch = rawText.match(FM_RE);
   if (fmMatch) {
     try {
-      fm2 = (0, import_obsidian5.parseYaml)(fmMatch[1]) || {};
+      fm2 = (0, import_obsidian6.parseYaml)(fmMatch[1]) || {};
     } catch (e2) {
       fm2 = { status: "yaml_error" };
       console.warn(`Failed to parse YAML frontmatter in ${filename}:`, e2);
@@ -48981,6 +49303,11 @@ function positionToOffset(content, line, char) {
   const lineEnd = nextNl === -1 ? content.length : nextNl;
   return Math.min(offset + char, lineEnd);
 }
+function sliceLspRange(content, startLine, startChar, endLine, endChar) {
+  const from = positionToOffset(content, startLine, startChar);
+  const to2 = positionToOffset(content, endLine, endChar);
+  return content.slice(from, to2);
+}
 function applyLspEdit(content, startLine, startChar, endLine, endChar, newText) {
   const lineCount = content.split("\n").length;
   if (startLine < 1 || startLine > lineCount || endLine < startLine || endLine > lineCount + 1) {
@@ -48997,7 +49324,7 @@ var DIALOGUE_RE2 = /^\[character:\s*[^\]]+\]\s*[—–-]/;
 var COLON_RE = /^(?:\*\*|__)*([А-ЯІЇЄA-Z][^:\*\_]{1,30})(?:\*\*|__)*:\s+(.+)$/;
 function toVaultRelative(app, absPath) {
   const adapter = app.vault.adapter;
-  if (adapter instanceof import_obsidian6.FileSystemAdapter) {
+  if (adapter instanceof import_obsidian7.FileSystemAdapter) {
     const base = adapter.getBasePath();
     if (absPath.startsWith(base)) {
       return absPath.slice(base.length).replace(/^\/+/, "");
@@ -49006,8 +49333,9 @@ function toVaultRelative(app, absPath) {
   return absPath.replace(/^\/+/, "");
 }
 var LocalToolExecutor = class {
-  constructor(app, bookDir) {
+  constructor(app, bookDir, reviewContext) {
     this.app = app;
+    this.reviewContext = reviewContext;
     this.vaultBookDir = toVaultRelative(app, bookDir);
   }
   vaultBookDir;
@@ -49023,9 +49351,9 @@ var LocalToolExecutor = class {
       filename
     ];
     for (const p2 of searchPaths) {
-      const normalized = (0, import_obsidian6.normalizePath)(p2);
+      const normalized = (0, import_obsidian7.normalizePath)(p2);
       const file = this.app.vault.getAbstractFileByPath(normalized);
-      if (file instanceof import_obsidian6.TFile)
+      if (file instanceof import_obsidian7.TFile)
         return file;
     }
     return null;
@@ -49479,18 +49807,51 @@ ${addLineNumbers(scene.text, fileLineStart)}`;
     if (typeof args.content !== "string")
       return "Please provide content for the file.";
     const d2 = this.vaultBookDir;
-    const fullPath = (0, import_obsidian6.normalizePath)(d2 ? `${d2}/${args.filename}` : args.filename);
+    const fullPath = (0, import_obsidian7.normalizePath)(d2 ? `${d2}/${args.filename}` : args.filename);
     const existing = this.app.vault.getAbstractFileByPath(fullPath);
-    if (existing instanceof import_obsidian6.TFile) {
+    if (existing instanceof import_obsidian7.TFile) {
+      if (this.reviewContext?.reviewAiEdits) {
+        const oldText = await this.app.vault.read(existing);
+        const lines = oldText.split("\n");
+        const status = await proposeWrite(this.app, this.reviewContext.pendingEditsRegistry, {
+          filePath: existing.path,
+          kind: "replace",
+          oldText,
+          newText: args.content,
+          range: {
+            startLine: 1,
+            startChar: 0,
+            endLine: lines.length,
+            endChar: lines[lines.length - 1].length
+          }
+        });
+        if (status === "rejected")
+          return "User rejected the edit. No change made.";
+      }
       await this.app.vault.modify(existing, args.content);
       return `Updated ${args.filename} (${args.content.split("\n").length} lines).`;
     }
     const segments = fullPath.split("/");
     for (let i2 = 1; i2 < segments.length - 1; i2++) {
-      const folderPath = (0, import_obsidian6.normalizePath)(segments.slice(0, i2 + 1).join("/"));
+      const folderPath = (0, import_obsidian7.normalizePath)(segments.slice(0, i2 + 1).join("/"));
       if (!this.app.vault.getAbstractFileByPath(folderPath)) {
         await this.app.vault.createFolder(folderPath);
       }
+    }
+    if (this.reviewContext?.reviewAiEdits) {
+      await this.app.vault.create(fullPath, args.content);
+      const newFile = this.app.vault.getAbstractFileByPath(fullPath);
+      const status = await proposeWrite(this.app, this.reviewContext.pendingEditsRegistry, {
+        filePath: fullPath,
+        kind: "create-file",
+        oldText: "",
+        newText: args.content
+      });
+      if (status === "rejected") {
+        await this.app.vault.delete(newFile);
+        return "User rejected the new file. File deleted.";
+      }
+      return `Created ${args.filename} (${args.content.split("\n").length} lines).`;
     }
     await this.app.vault.create(fullPath, args.content);
     return `Created ${args.filename} (${args.content.split("\n").length} lines).`;
@@ -49499,6 +49860,30 @@ ${addLineNumbers(scene.text, fileLineStart)}`;
     const file = this.getFile(args.filename);
     if (!file)
       return `File not found: ${args.filename}. Available folders: chapters/, notes/`;
+    if (this.reviewContext?.reviewAiEdits) {
+      const content = await this.app.vault.read(file);
+      const oldText = sliceLspRange(
+        content,
+        args.start_line,
+        args.start_char,
+        args.end_line,
+        args.end_char
+      );
+      const status = await proposeWrite(this.app, this.reviewContext.pendingEditsRegistry, {
+        filePath: file.path,
+        kind: "replace",
+        oldText,
+        newText: args.new_text,
+        range: {
+          startLine: args.start_line,
+          startChar: args.start_char,
+          endLine: args.end_line,
+          endChar: args.end_char
+        }
+      });
+      if (status === "rejected")
+        return "User rejected the edit. No change made.";
+    }
     let editError = null;
     let before = 0;
     let after = 0;
@@ -49538,6 +49923,16 @@ ${addLineNumbers(scene.text, fileLineStart)}`;
     const file = this.getFile(args.filename);
     if (!file)
       return `File not found: ${args.filename}. Available folders: chapters/, notes/`;
+    if (this.reviewContext?.reviewAiEdits) {
+      const status = await proposeWrite(this.app, this.reviewContext.pendingEditsRegistry, {
+        filePath: file.path,
+        kind: "append",
+        oldText: "",
+        newText: args.text
+      });
+      if (status === "rejected")
+        return "User rejected the edit. No change made.";
+    }
     await this.app.vault.process(file, (data) => {
       const separator = data.trim() ? "\n\n---\n\n" : "";
       return data + separator + args.text;
@@ -49582,6 +49977,16 @@ ${addLineNumbers(scene.text, fileLineStart)}`;
     }
     sceneParts.push(formattedText);
     const sceneBlock = sceneParts.join("\n");
+    if (this.reviewContext?.reviewAiEdits) {
+      const status = await proposeWrite(this.app, this.reviewContext.pendingEditsRegistry, {
+        filePath: file.path,
+        kind: "append",
+        oldText: "",
+        newText: sceneBlock
+      });
+      if (status === "rejected")
+        return "User rejected the edit. No change made.";
+    }
     await this.app.vault.process(file, (existing) => {
       const separator = existing.trim() ? "\n\n---\n\n" : "";
       return existing + separator + sceneBlock + "\n";
@@ -49609,7 +50014,7 @@ ${sceneBlock}`;
     if (!match)
       return {};
     try {
-      return (0, import_obsidian6.parseYaml)(match[1]) || {};
+      return (0, import_obsidian7.parseYaml)(match[1]) || {};
     } catch {
       return {};
     }
@@ -49617,7 +50022,7 @@ ${sceneBlock}`;
 };
 
 // src/chat.ts
-var _NarrativeChatView = class extends import_obsidian7.ItemView {
+var _NarrativeChatView = class extends import_obsidian8.ItemView {
   api;
   plugin;
   messages = [];
@@ -49634,7 +50039,7 @@ var _NarrativeChatView = class extends import_obsidian7.ItemView {
     super(leaf);
     this.api = api;
     this.plugin = plugin;
-    this.mdComponent = new import_obsidian7.Component();
+    this.mdComponent = new import_obsidian8.Component();
   }
   getViewType() {
     return _NarrativeChatView.VIEW_TYPE;
@@ -49651,7 +50056,7 @@ var _NarrativeChatView = class extends import_obsidian7.ItemView {
    * active leaf (in which case getActiveViewOfType returns null).
    */
   findActiveMarkdownView() {
-    const direct = this.plugin.app.workspace.getActiveViewOfType(import_obsidian7.MarkdownView);
+    const direct = this.plugin.app.workspace.getActiveViewOfType(import_obsidian8.MarkdownView);
     if (direct)
       return direct;
     const leaves = this.plugin.app.workspace.getLeavesOfType("markdown");
@@ -49727,7 +50132,7 @@ var _NarrativeChatView = class extends import_obsidian7.ItemView {
     );
   }
   getContext() {
-    const vaultPath = this.plugin.app.vault.adapter instanceof import_obsidian7.FileSystemAdapter ? this.plugin.app.vault.adapter.getBasePath() : "";
+    const vaultPath = this.plugin.app.vault.adapter instanceof import_obsidian8.FileSystemAdapter ? this.plugin.app.vault.adapter.getBasePath() : "";
     const view = this.findActiveMarkdownView();
     const relativePath = view?.file?.path ?? this.plugin.lastActiveMdPath ?? "";
     const filePath = vaultPath && relativePath ? `${vaultPath}/${relativePath}` : relativePath;
@@ -49787,7 +50192,10 @@ var _NarrativeChatView = class extends import_obsidian7.ItemView {
         if (!apiKey && provider !== "local") {
           throw new Error(`API key is required for provider '${provider}'. Please set it in Narrative Forge settings.`);
         }
-        const localTools = new LocalToolExecutor(this.plugin.app, bookDir || "");
+        const localTools = new LocalToolExecutor(this.plugin.app, bookDir || "", {
+          reviewAiEdits: this.plugin.settings.reviewAiEdits,
+          pendingEditsRegistry: this.plugin.pendingEditsRegistry
+        });
         const agent = createAgent(
           provider,
           modelName,
@@ -49830,7 +50238,7 @@ var _NarrativeChatView = class extends import_obsidian7.ItemView {
       const MAX_HISTORY = 40;
       if (this.apiHistory.length > MAX_HISTORY) {
         this.apiHistory = this.apiHistory.slice(this.apiHistory.length - MAX_HISTORY);
-        new import_obsidian7.Notice("Narrative Forge: Conversation trimmed to last 20 turns to fit context window.");
+        new import_obsidian8.Notice("Narrative Forge: Conversation trimmed to last 20 turns to fit context window.");
       }
       if (toolUses.length > 0) {
         this.appendToolSummary(assistantEl, toolUses);
@@ -49862,7 +50270,7 @@ Alternative providers with keys configured: ${alternatives.join(", ")}. Switch i
         }
       }
       this.updateAssistantMessage(assistantEl, errorMessage);
-      new import_obsidian7.Notice(`Chat error: ${errMsg}`);
+      new import_obsidian8.Notice(`Chat error: ${errMsg}`);
     } finally {
       this.isStreaming = false;
       const indicator = assistantEl.querySelector(".narrative-stream-indicator");
@@ -49880,7 +50288,7 @@ Alternative providers with keys configured: ${alternatives.join(", ")}. Switch i
    */
   async buildApiMessages() {
     const msgs = this.messages.map((m2) => ({ role: m2.role, content: m2.content }));
-    const vaultBase = this.plugin.app.vault.adapter instanceof import_obsidian7.FileSystemAdapter ? this.plugin.app.vault.adapter.getBasePath() : "";
+    const vaultBase = this.plugin.app.vault.adapter instanceof import_obsidian8.FileSystemAdapter ? this.plugin.app.vault.adapter.getBasePath() : "";
     let bookRoot = this.plugin.getCurrentBookRoot();
     if (bookRoot == null) {
       const activeFile = this.plugin.app.workspace.getActiveFile();
@@ -49968,7 +50376,7 @@ ${ctx.selection}`);
     if (content) {
       content.empty();
       try {
-        void import_obsidian7.MarkdownRenderer.renderMarkdown(text, content, "", this.mdComponent);
+        void import_obsidian8.MarkdownRenderer.renderMarkdown(text, content, "", this.mdComponent);
       } catch {
         content.textContent = text;
       }
@@ -49996,7 +50404,7 @@ var NarrativeChatView = _NarrativeChatView;
 __publicField(NarrativeChatView, "VIEW_TYPE", "narrative-chat");
 
 // src/settings.ts
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 var DEFAULT_SETTINGS = {
   backendMode: "external",
   externalUrl: "http://localhost:8000",
@@ -50010,9 +50418,10 @@ var DEFAULT_SETTINGS = {
   localBaseUrl: "http://localhost:11434/v1",
   modelName: "",
   autoImport: true,
+  reviewAiEdits: true,
   embeddingModel: "multilingual"
 };
-var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
+var NarrativeSettingTab = class extends import_obsidian9.PluginSettingTab {
   plugin;
   constructor(app, plugin) {
     super(app, plugin);
@@ -50021,8 +50430,8 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian8.Setting(containerEl).setName("Backend").setHeading();
-    new import_obsidian8.Setting(containerEl).setName("Backend mode").setDesc("How to connect to the narrative-forge Python backend.").addDropdown(
+    new import_obsidian9.Setting(containerEl).setName("Backend").setHeading();
+    new import_obsidian9.Setting(containerEl).setName("Backend mode").setDesc("How to connect to the narrative-forge Python backend.").addDropdown(
       (drop) => drop.addOption("external", "External URL (backend runs separately)").addOption("managed", "Managed (plugin starts/stops backend)").setValue(this.plugin.settings.backendMode).onChange(async (value) => {
         this.plugin.settings.backendMode = value;
         await this.plugin.saveSettings();
@@ -50030,7 +50439,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
       })
     );
     if (this.plugin.settings.backendMode === "external") {
-      new import_obsidian8.Setting(containerEl).setName("Backend URL").setDesc("URL of the running narrative-forge server (e.g. http://localhost:8000).").addText(
+      new import_obsidian9.Setting(containerEl).setName("Backend URL").setDesc("URL of the running narrative-forge server (e.g. http://localhost:8000).").addText(
         (text) => text.setPlaceholder("http://localhost:8000").setValue(this.plugin.settings.externalUrl).onChange(async (value) => {
           this.plugin.settings.externalUrl = value.trim();
           await this.plugin.saveSettings();
@@ -50038,13 +50447,13 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
         })
       );
     } else {
-      new import_obsidian8.Setting(containerEl).setName("Python path").setDesc("Path to Python 3 executable (or 'python3').").addText(
+      new import_obsidian9.Setting(containerEl).setName("Python path").setDesc("Path to Python 3 executable (or 'python3').").addText(
         (text) => text.setPlaceholder("python3").setValue(this.plugin.settings.pythonPath).onChange(async (value) => {
           this.plugin.settings.pythonPath = value.trim();
           await this.plugin.saveSettings();
         })
       );
-      new import_obsidian8.Setting(containerEl).setName("Book directory").setDesc(
+      new import_obsidian9.Setting(containerEl).setName("Book directory").setDesc(
         "Path to the directory containing .md chapter files. Leave empty to use vault root."
       ).addText(
         (text) => text.setPlaceholder("/path/to/book (empty = vault root)").setValue(this.plugin.settings.bookDir).onChange(async (value) => {
@@ -50053,7 +50462,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
         })
       );
     }
-    new import_obsidian8.Setting(containerEl).setName("Default backend URL").setDesc(
+    new import_obsidian9.Setting(containerEl).setName("Default backend URL").setDesc(
       "Fallback URL used when the active file is not inside a book folder with .narrative-book.json."
     ).addText(
       (text) => text.setPlaceholder("http://localhost:8000").setValue(this.plugin.settings.defaultBackendUrl).onChange(async (value) => {
@@ -50061,21 +50470,21 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian8.Setting(containerEl).setName("Test connection").setDesc("Check if the backend is reachable.").addButton(
+    new import_obsidian9.Setting(containerEl).setName("Test connection").setDesc("Check if the backend is reachable.").addButton(
       (btn) => btn.setButtonText("Test").setCta().onClick(async () => {
         btn.setButtonText("Testing...");
         btn.setDisabled(true);
         try {
           const healthy = await this.plugin.api.health();
           if (healthy) {
-            new import_obsidian8.Notice("Narrative Forge: Connected successfully!");
+            new import_obsidian9.Notice("Narrative Forge: Connected successfully!");
             btn.setButtonText("Connected");
           } else {
-            new import_obsidian8.Notice("Narrative Forge: Backend unreachable.");
+            new import_obsidian9.Notice("Narrative Forge: Backend unreachable.");
             btn.setButtonText("Failed");
           }
         } catch {
-          new import_obsidian8.Notice("Narrative Forge: Connection error.");
+          new import_obsidian9.Notice("Narrative Forge: Connection error.");
           btn.setButtonText("Error");
         } finally {
           btn.setDisabled(false);
@@ -50083,8 +50492,8 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
         }
       })
     );
-    new import_obsidian8.Setting(containerEl).setName("LLM provider").setHeading();
-    new import_obsidian8.Setting(containerEl).setName("Provider").setDesc("Which LLM to use for AI features.").addDropdown(
+    new import_obsidian9.Setting(containerEl).setName("LLM provider").setHeading();
+    new import_obsidian9.Setting(containerEl).setName("Provider").setDesc("Which LLM to use for AI features.").addDropdown(
       (drop) => drop.addOption("cli", "Claude CLI (uses local Claude subscription)").addOption("anthropic", "Anthropic API (Claude)").addOption("openai", "OpenAI API (ChatGPT)").addOption("gemini", "Google Gemini API").addOption("local", "Local LLM (Ollama, LM Studio)").setValue(this.plugin.settings.provider === "api" ? "anthropic" : this.plugin.settings.provider).onChange(async (value) => {
         this.plugin.settings.provider = value;
         const defaults2 = {
@@ -50101,7 +50510,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
       })
     );
     if (this.plugin.settings.provider !== "cli") {
-      new import_obsidian8.Setting(containerEl).setName("Model name").setDesc("Specific model to use (e.g., gpt-4o, claude-3-5-sonnet-20241022)").addText(
+      new import_obsidian9.Setting(containerEl).setName("Model name").setDesc("Specific model to use (e.g., gpt-4o, claude-3-5-sonnet-20241022)").addText(
         (text) => text.setPlaceholder("Model ID").setValue(this.plugin.settings.modelName).onChange(async (value) => {
           this.plugin.settings.modelName = value.trim();
           await this.plugin.saveSettings();
@@ -50109,7 +50518,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
       );
     }
     if (this.plugin.settings.provider === "anthropic") {
-      new import_obsidian8.Setting(containerEl).setName("Anthropic API key").setDesc("Your Anthropic API key (sk-ant-...).").addText((text) => {
+      new import_obsidian9.Setting(containerEl).setName("Anthropic API key").setDesc("Your Anthropic API key (sk-ant-...).").addText((text) => {
         text.setPlaceholder("sk-ant-...").setValue(this.plugin.settings.apiKey).onChange(async (value) => {
           this.plugin.settings.apiKey = value.trim();
           await this.plugin.saveSettings();
@@ -50118,7 +50527,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
         return text;
       });
     } else if (this.plugin.settings.provider === "openai") {
-      new import_obsidian8.Setting(containerEl).setName("OpenAI API key").setDesc("Your OpenAI API key (sk-...).").addText((text) => {
+      new import_obsidian9.Setting(containerEl).setName("OpenAI API key").setDesc("Your OpenAI API key (sk-...).").addText((text) => {
         text.setPlaceholder("sk-...").setValue(this.plugin.settings.openaiApiKey).onChange(async (value) => {
           this.plugin.settings.openaiApiKey = value.trim();
           await this.plugin.saveSettings();
@@ -50127,7 +50536,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
         return text;
       });
     } else if (this.plugin.settings.provider === "gemini") {
-      new import_obsidian8.Setting(containerEl).setName("Gemini API key").setDesc("Your Google Gemini API key.").addText((text) => {
+      new import_obsidian9.Setting(containerEl).setName("Gemini API key").setDesc("Your Google Gemini API key.").addText((text) => {
         text.setPlaceholder("AIza...").setValue(this.plugin.settings.geminiApiKey).onChange(async (value) => {
           this.plugin.settings.geminiApiKey = value.trim();
           await this.plugin.saveSettings();
@@ -50136,7 +50545,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
         return text;
       });
     } else if (this.plugin.settings.provider === "local") {
-      new import_obsidian8.Setting(containerEl).setName("Local Base URL").setDesc("OpenAI-compatible endpoint. Ollama: http://localhost:11434/v1 \u2014 LM Studio: http://localhost:1234/v1").addText((text) => {
+      new import_obsidian9.Setting(containerEl).setName("Local Base URL").setDesc("OpenAI-compatible endpoint. Ollama: http://localhost:11434/v1 \u2014 LM Studio: http://localhost:1234/v1").addText((text) => {
         text.setPlaceholder("http://localhost:11434/v1 or http://localhost:1234/v1").setValue(this.plugin.settings.localBaseUrl).onChange(async (value) => {
           this.plugin.settings.localBaseUrl = value.trim();
           await this.plugin.saveSettings();
@@ -50148,10 +50557,10 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
           btn.setDisabled(true);
           const err = await pingLocalLLM(this.plugin.settings.localBaseUrl);
           if (err) {
-            new import_obsidian8.Notice(`Local LLM unreachable: ${err}`);
+            new import_obsidian9.Notice(`Local LLM unreachable: ${err}`);
             btn.setButtonText("Failed");
           } else {
-            new import_obsidian8.Notice("Local LLM reachable.");
+            new import_obsidian9.Notice("Local LLM reachable.");
             btn.setButtonText("OK");
           }
           setTimeout(() => {
@@ -50161,8 +50570,8 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
         })
       );
     }
-    new import_obsidian8.Setting(containerEl).setName("Import").setHeading();
-    new import_obsidian8.Setting(containerEl).setName("Auto-import on save").setDesc(
+    new import_obsidian9.Setting(containerEl).setName("Import").setHeading();
+    new import_obsidian9.Setting(containerEl).setName("Auto-import on save").setDesc(
       "Automatically trigger book import when a .md file is saved."
     ).addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.autoImport).onChange(async (value) => {
@@ -50170,7 +50579,15 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian8.Setting(containerEl).setName("Embedding model").setDesc(
+    new import_obsidian9.Setting(containerEl).setName("Review AI edits before applying").setDesc(
+      "Show proposed AI edits inline (red strikethrough for deletions, green for additions) with Apply / Reject buttons. Disable to auto-apply."
+    ).addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.reviewAiEdits).onChange(async (value) => {
+        this.plugin.settings.reviewAiEdits = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian9.Setting(containerEl).setName("Embedding model").setDesc(
       "Model used to index and search your book. Use Multilingual for non-English text. Changing this requires a Force reimport to rebuild the index."
     ).addDropdown(
       (drop) => drop.addOption("en", "English (all-MiniLM-L6-v2, faster)").addOption("multilingual", "Multilingual (paraphrase-multilingual-MiniLM-L12-v2)").setValue(this.plugin.settings.embeddingModel).onChange(async (value) => {
@@ -50178,8 +50595,8 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian8.Setting(containerEl).setName("Books").setHeading();
-    new import_obsidian8.Setting(containerEl).setName("Create new book").setDesc(
+    new import_obsidian9.Setting(containerEl).setName("Books").setHeading();
+    new import_obsidian9.Setting(containerEl).setName("Create new book").setDesc(
       "Create a new book folder with .narrative-book.json marker and default structure."
     ).addButton(
       (btn) => btn.setButtonText("Create new book...").onClick(() => {
@@ -50189,10 +50606,10 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
         }
       })
     );
-    new import_obsidian8.Setting(containerEl).setName("About").setHeading();
+    new import_obsidian9.Setting(containerEl).setName("About").setHeading();
     const infoDiv = containerEl.createEl("div", { cls: "narrative-settings-info" });
     infoDiv.createEl("p", {
-      text: "Narrative Forge v0.9.1 \u2014 AI-powered writing assistant for fiction authors."
+      text: "Narrative Forge v0.10.0 \u2014 AI-powered writing assistant for fiction authors."
     });
     infoDiv.createEl("p", {
       text: "Start the backend with: uvicorn narrative_os.server:app --reload",
@@ -50202,7 +50619,7 @@ var NarrativeSettingTab = class extends import_obsidian8.PluginSettingTab {
 };
 
 // src/book.ts
-var import_obsidian9 = require("obsidian");
+var import_obsidian10 = require("obsidian");
 var BOOK_MARKER = ".narrative-book.json";
 var BookManager = class {
   constructor(app) {
@@ -50240,7 +50657,7 @@ var BookManager = class {
     parts.pop();
     while (parts.length > 0) {
       const dir = parts.join("/");
-      const markerPath = (0, import_obsidian9.normalizePath)(`${dir}/${BOOK_MARKER}`);
+      const markerPath = (0, import_obsidian10.normalizePath)(`${dir}/${BOOK_MARKER}`);
       if (await this.app.vault.adapter.exists(markerPath)) {
         const config = await this.readMarker(markerPath);
         if (config)
@@ -50312,13 +50729,13 @@ var BookManager = class {
     const vault = this.app.vault;
     const rootPrefix = bookRoot ? `${bookRoot}/` : "";
     for (const name of characterNames) {
-      const notePath = (0, import_obsidian9.normalizePath)(
+      const notePath = (0, import_obsidian10.normalizePath)(
         `${rootPrefix}${config.folders.characters}/${name}.md`
       );
       await this.ensureNote(vault, notePath, "character", chapterLink);
     }
     for (const name of locationNames) {
-      const notePath = (0, import_obsidian9.normalizePath)(
+      const notePath = (0, import_obsidian10.normalizePath)(
         `${rootPrefix}${config.folders.locations}/${name}.md`
       );
       await this.ensureNote(vault, notePath, "location", chapterLink);
@@ -50338,7 +50755,7 @@ var BookManager = class {
    */
   async ensureNote(vault, notePath, type, chapterLink) {
     const existing = vault.getAbstractFileByPath(notePath);
-    if (!(existing instanceof import_obsidian9.TFile)) {
+    if (!(existing instanceof import_obsidian10.TFile)) {
       const folder = notePath.substring(0, notePath.lastIndexOf("/"));
       if (folder && !vault.getAbstractFileByPath(folder)) {
         await vault.createFolder(folder).catch(() => {
@@ -50403,8 +50820,8 @@ $2`
 };
 
 // src/timeline.ts
-var import_obsidian10 = require("obsidian");
-var _NarrativeTimelineView = class extends import_obsidian10.ItemView {
+var import_obsidian11 = require("obsidian");
+var _NarrativeTimelineView = class extends import_obsidian11.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -50466,7 +50883,7 @@ var _NarrativeTimelineView = class extends import_obsidian10.ItemView {
     const bookRoot = this.plugin.getCurrentBookRoot();
     if (!bookRoot)
       return [];
-    const timelinePath = (0, import_obsidian10.normalizePath)(`${bookRoot}/timeline.md`);
+    const timelinePath = (0, import_obsidian11.normalizePath)(`${bookRoot}/timeline.md`);
     let content = "";
     try {
       content = await this.plugin.app.vault.adapter.read(timelinePath);
@@ -50640,7 +51057,7 @@ function stripWikilink(s2) {
 }
 
 // src/session.ts
-var import_obsidian11 = require("obsidian");
+var import_obsidian12 = require("obsidian");
 function countWords(text) {
   return text.trim() === "" ? 0 : text.trim().split(/\s+/).length;
 }
@@ -50649,7 +51066,7 @@ function fmtTime(seconds) {
   const s2 = (seconds % 60).toString().padStart(2, "0");
   return `${m2}:${s2}`;
 }
-var SessionModal = class extends import_obsidian11.Modal {
+var SessionModal = class extends import_obsidian12.Modal {
   minutes = 25;
   onStart;
   onStop;
@@ -50671,7 +51088,7 @@ var SessionModal = class extends import_obsidian11.Modal {
       contentEl.createEl("p", {
         text: `Session in progress: +${this.written} written, -${this.deleted} deleted.`
       });
-      new import_obsidian11.Setting(contentEl).addButton(
+      new import_obsidian12.Setting(contentEl).addButton(
         (btn) => btn.setButtonText("Stop session").setWarning().onClick(() => {
           this.onStop();
           this.close();
@@ -50679,12 +51096,12 @@ var SessionModal = class extends import_obsidian11.Modal {
       );
       return;
     }
-    new import_obsidian11.Setting(contentEl).setName("Duration (minutes)").addSlider(
+    new import_obsidian12.Setting(contentEl).setName("Duration (minutes)").addSlider(
       (sl2) => sl2.setLimits(5, 120, 5).setValue(this.minutes).setDynamicTooltip().onChange((v3) => {
         this.minutes = v3;
       })
     );
-    new import_obsidian11.Setting(contentEl).addButton(
+    new import_obsidian12.Setting(contentEl).addButton(
       (btn) => btn.setButtonText("Start").setCta().onClick(() => {
         this.onStart(this.minutes);
         this.close();
@@ -50789,7 +51206,7 @@ var WritingSession = class {
 
 // src/local_server.ts
 var http = __toESM(require("http"));
-var import_obsidian12 = require("obsidian");
+var import_obsidian13 = require("obsidian");
 var LocalServer = class {
   server = null;
   app;
@@ -50877,7 +51294,7 @@ var LocalServer = class {
     this.server.on("error", (e2) => {
       console.error("[Narrative Forge] Local bridge server error:", e2);
       if (e2.code === "EADDRINUSE") {
-        new import_obsidian12.Notice("Narrative Forge: Port 18000 is already in use. Python \u2192 Obsidian write operations will not work until the conflict is resolved.");
+        new import_obsidian13.Notice("Narrative Forge: Port 18000 is already in use. Python \u2192 Obsidian write operations will not work until the conflict is resolved.");
       }
     });
   }
@@ -50890,7 +51307,7 @@ var LocalServer = class {
 };
 
 // src/importer.ts
-var import_obsidian13 = require("obsidian");
+var import_obsidian14 = require("obsidian");
 async function hashContent(content) {
   const encoder = new TextEncoder();
   const data = encoder.encode(content);
@@ -50926,7 +51343,7 @@ function splitWords(text, window2, overlap) {
 }
 function toVaultRelative2(app, absPath) {
   const adapter = app.vault.adapter;
-  if (adapter instanceof import_obsidian13.FileSystemAdapter) {
+  if (adapter instanceof import_obsidian14.FileSystemAdapter) {
     const base = adapter.getBasePath();
     if (absPath.startsWith(base)) {
       return absPath.slice(base.length).replace(/^\/+/, "");
@@ -51003,7 +51420,7 @@ async function importBookLocally(app, bookDir, force = false, embeddingModel, ha
 }
 
 // src/main.ts
-var CreateBookModal = class extends import_obsidian14.Modal {
+var CreateBookModal = class extends import_obsidian15.Modal {
   title = "";
   folderName = "";
   onSubmit;
@@ -51014,7 +51431,7 @@ var CreateBookModal = class extends import_obsidian14.Modal {
   onOpen() {
     const { contentEl } = this;
     contentEl.createEl("h2", { text: "Create new book" });
-    new import_obsidian14.Setting(contentEl).setName("Book title").setDesc("The display title of your book.").addText(
+    new import_obsidian15.Setting(contentEl).setName("Book title").setDesc("The display title of your book.").addText(
       (text) => text.setPlaceholder("My Fantasy Novel").onChange((v3) => {
         this.title = v3;
         if (!this.folderName || this.folderName === this.slugify(this.title.slice(0, -1))) {
@@ -51022,17 +51439,17 @@ var CreateBookModal = class extends import_obsidian14.Modal {
         }
       })
     );
-    new import_obsidian14.Setting(contentEl).setName("Folder name").setDesc("Folder that will be created in the vault root.").addText(
+    new import_obsidian15.Setting(contentEl).setName("Folder name").setDesc("Folder that will be created in the vault root.").addText(
       (text) => text.setPlaceholder("my-fantasy-novel").onChange((v3) => {
         this.folderName = v3;
       })
     );
-    new import_obsidian14.Setting(contentEl).addButton(
+    new import_obsidian15.Setting(contentEl).addButton(
       (btn) => btn.setButtonText("Create").setCta().onClick(async () => {
         const title = this.title.trim();
         const folder = this.folderName.trim() || this.slugify(title);
         if (!title) {
-          new import_obsidian14.Notice("Please enter a book title.");
+          new import_obsidian15.Notice("Please enter a book title.");
           return;
         }
         this.close();
@@ -51047,11 +51464,12 @@ var CreateBookModal = class extends import_obsidian14.Modal {
     return s2.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
   }
 };
-var NarrativePlugin = class extends import_obsidian14.Plugin {
+var NarrativePlugin = class extends import_obsidian15.Plugin {
   settings;
   api;
   backend;
   bookManager;
+  pendingEditsRegistry;
   cachedCharacters = [];
   autoImportDebounceMap = /* @__PURE__ */ new Map();
   writingSession;
@@ -51089,19 +51507,21 @@ var NarrativePlugin = class extends import_obsidian14.Plugin {
       const bookDir = this.settings.bookDir || this.app.vault.adapter.basePath || ".";
       try {
         await this.backend.start(this.settings.pythonPath, bookDir);
-        new import_obsidian14.Notice("Narrative Forge: Starting backend...");
+        new import_obsidian15.Notice("Narrative Forge: Starting backend...");
         const ready = await this.backend.waitReady(this.getBackendUrl(), 15e3);
         if (ready) {
-          new import_obsidian14.Notice("Narrative Forge: Backend ready.");
+          new import_obsidian15.Notice("Narrative Forge: Backend ready.");
         } else {
-          new import_obsidian14.Notice("Narrative Forge: Backend may not be ready \u2014 check logs.");
+          new import_obsidian15.Notice("Narrative Forge: Backend may not be ready \u2014 check logs.");
         }
       } catch (err) {
-        new import_obsidian14.Notice(`Narrative Forge: Failed to start backend \u2014 ${err}`);
+        new import_obsidian15.Notice(`Narrative Forge: Failed to start backend \u2014 ${err}`);
         console.error("[Narrative Forge] Backend start error:", err);
       }
     }
     this.registerEditorExtension(buildNosPlugin({}));
+    this.pendingEditsRegistry = new PendingEditsRegistry();
+    this.registerEditorExtension(buildPendingEditsPlugin(this.app, this.pendingEditsRegistry));
     registerContextMenu(
       this,
       () => this.cachedCharacters,
@@ -51161,7 +51581,7 @@ var NarrativePlugin = class extends import_obsidian14.Plugin {
     });
     this.registerEvent(
       this.app.workspace.on("file-open", (file) => {
-        if (file instanceof import_obsidian14.TFile) {
+        if (file instanceof import_obsidian15.TFile) {
           void this.onActiveFileChange(file);
         }
       })
@@ -51172,7 +51592,7 @@ var NarrativePlugin = class extends import_obsidian14.Plugin {
         const prevType = prev?.view?.getViewType?.() ?? "null";
         const newType = newLeaf?.view?.getViewType?.() ?? "null";
         let snapshot = "";
-        if (prev && prev !== newLeaf && prev.view instanceof import_obsidian14.MarkdownView) {
+        if (prev && prev !== newLeaf && prev.view instanceof import_obsidian15.MarkdownView) {
           try {
             snapshot = prev.view.editor.getSelection();
             if (snapshot)
@@ -51187,7 +51607,7 @@ var NarrativePlugin = class extends import_obsidian14.Plugin {
     this.registerAutoImport();
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian14.TFile && file.name === "CLAUDE.md") {
+        if (file instanceof import_obsidian15.TFile && file.name === "CLAUDE.md") {
           invalidatePromptCache();
         }
       })
@@ -51208,7 +51628,7 @@ var NarrativePlugin = class extends import_obsidian14.Plugin {
       return;
     const err = await pingLocalLLM(this.settings.localBaseUrl);
     if (err) {
-      new import_obsidian14.Notice(
+      new import_obsidian15.Notice(
         `Narrative Forge: Local LLM unreachable at ${this.settings.localBaseUrl}. ${err}. Check Settings \u2192 LLM Provider, or start your local server.`,
         8e3
       );
@@ -51282,7 +51702,7 @@ var NarrativePlugin = class extends import_obsidian14.Plugin {
     if (bookRoot == null)
       return void 0;
     const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof import_obsidian14.FileSystemAdapter))
+    if (!(adapter instanceof import_obsidian15.FileSystemAdapter))
       return void 0;
     const base = adapter.getBasePath();
     return bookRoot ? `${base}/${bookRoot}` : base;
@@ -51315,7 +51735,7 @@ var NarrativePlugin = class extends import_obsidian14.Plugin {
         const base = folderName;
         const subfolders = ["chapters", "characters", "locations", "world", "notes"];
         for (const sub of subfolders) {
-          const path3 = (0, import_obsidian14.normalizePath)(`${base}/${sub}`);
+          const path3 = (0, import_obsidian15.normalizePath)(`${base}/${sub}`);
           if (!vault.getAbstractFileByPath(path3)) {
             await vault.createFolder(path3);
           }
@@ -51332,11 +51752,11 @@ var NarrativePlugin = class extends import_obsidian14.Plugin {
             notes: "notes"
           }
         };
-        const markerPath = (0, import_obsidian14.normalizePath)(`${base}/.narrative-book.json`);
+        const markerPath = (0, import_obsidian15.normalizePath)(`${base}/.narrative-book.json`);
         if (!vault.getAbstractFileByPath(markerPath)) {
           await vault.create(markerPath, JSON.stringify(config, null, 2));
         }
-        const sampleChapter = (0, import_obsidian14.normalizePath)(`${base}/chapters/01-chapter.md`);
+        const sampleChapter = (0, import_obsidian15.normalizePath)(`${base}/chapters/01-chapter.md`);
         if (!vault.getAbstractFileByPath(sampleChapter)) {
           await vault.create(sampleChapter, `---
 chapter: 1
@@ -51368,7 +51788,7 @@ with Dataview inline syntax above (location:: and timeline::).
 [character: Character One] \u2014 A line in the second scene.
 `);
         }
-        const charTemplate = (0, import_obsidian14.normalizePath)(`${base}/characters/_template.md`);
+        const charTemplate = (0, import_obsidian15.normalizePath)(`${base}/characters/_template.md`);
         if (!vault.getAbstractFileByPath(charTemplate)) {
           await vault.create(charTemplate, `---
 type: character
@@ -51398,7 +51818,7 @@ How they change over the course of the book.
 - Private observations, things the reader doesn't know yet
 `);
         }
-        const locTemplate = (0, import_obsidian14.normalizePath)(`${base}/locations/_template.md`);
+        const locTemplate = (0, import_obsidian15.normalizePath)(`${base}/locations/_template.md`);
         if (!vault.getAbstractFileByPath(locTemplate)) {
           await vault.create(locTemplate, `---
 type: location
@@ -51423,7 +51843,7 @@ Atmosphere, sights, sounds, smells.
 How it came to be this way.
 `);
         }
-        const worldTemplate = (0, import_obsidian14.normalizePath)(`${base}/world/_template.md`);
+        const worldTemplate = (0, import_obsidian15.normalizePath)(`${base}/world/_template.md`);
         if (!vault.getAbstractFileByPath(worldTemplate)) {
           await vault.create(worldTemplate, `---
 type: world_element
@@ -51442,7 +51862,7 @@ related_locations: []
 - Cost or drawback
 `);
         }
-        const readme = (0, import_obsidian14.normalizePath)(`${base}/README.md`);
+        const readme = (0, import_obsidian15.normalizePath)(`${base}/README.md`);
         if (!vault.getAbstractFileByPath(readme)) {
           await vault.create(readme, `# ${title}
 
@@ -51508,7 +51928,7 @@ This book uses: \`http://localhost:8000\`
 Change in \`.narrative-book.json\` if running on a different port.
 `);
         }
-        const timelinePath = (0, import_obsidian14.normalizePath)(`${base}/timeline.md`);
+        const timelinePath = (0, import_obsidian15.normalizePath)(`${base}/timeline.md`);
         if (!vault.getAbstractFileByPath(timelinePath)) {
           await vault.create(timelinePath, `# Timeline
 
@@ -51516,14 +51936,14 @@ Change in \`.narrative-book.json\` if running on a different port.
 |-------|------|-------|-----|------|--------|----------|------------|---------|
 `);
         }
-        new import_obsidian14.Notice(`Book "${title}" created in ${folderName}/`);
+        new import_obsidian15.Notice(`Book "${title}" created in ${folderName}/`);
         const chapterFile = vault.getAbstractFileByPath(sampleChapter);
-        if (chapterFile instanceof import_obsidian14.TFile) {
+        if (chapterFile instanceof import_obsidian15.TFile) {
           const leaf = this.app.workspace.getLeaf();
           await leaf.openFile(chapterFile);
         }
       } catch (err) {
-        new import_obsidian14.Notice(`Failed to create book: ${err}`);
+        new import_obsidian15.Notice(`Failed to create book: ${err}`);
         console.error("[Narrative Forge] Create book error:", err);
       }
     }).open();
@@ -51557,7 +51977,7 @@ Change in \`.narrative-book.json\` if running on a different port.
       this.app.vault.on("modify", (file) => {
         if (!this.settings.autoImport)
           return;
-        if (!(file instanceof import_obsidian14.TFile))
+        if (!(file instanceof import_obsidian15.TFile))
           return;
         if (!file.path.endsWith(".md"))
           return;
@@ -51616,7 +52036,7 @@ Change in \`.narrative-book.json\` if running on a different port.
    */
   async startupReindex() {
     const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof import_obsidian14.FileSystemAdapter))
+    if (!(adapter instanceof import_obsidian15.FileSystemAdapter))
       return;
     const vaultBase = adapter.getBasePath();
     const bookRoots = [];
@@ -51626,7 +52046,7 @@ Change in \`.narrative-book.json\` if running on a different port.
     try {
       const listing = await adapter.list("/");
       for (const folder of listing.folders) {
-        const markerPath2 = (0, import_obsidian14.normalizePath)(`${folder}/.narrative-book.json`);
+        const markerPath2 = (0, import_obsidian15.normalizePath)(`${folder}/.narrative-book.json`);
         if (await adapter.exists(markerPath2)) {
           bookRoots.push(folder);
         }
@@ -51683,10 +52103,10 @@ Change in \`.narrative-book.json\` if running on a different port.
   async runImport(force = false) {
     const absDir = this.getAbsoluteBookDir();
     if (!absDir) {
-      new import_obsidian14.Notice("Narrative Forge: No active book.");
+      new import_obsidian15.Notice("Narrative Forge: No active book.");
       return;
     }
-    const notice = new import_obsidian14.Notice("Narrative Forge: Importing locally...", 0);
+    const notice = new import_obsidian15.Notice("Narrative Forge: Importing locally...", 0);
     try {
       const pluginData = await this.loadData() || {};
       const bookCache = force ? {} : pluginData.fileHashes?.[absDir] ?? {};
@@ -51703,21 +52123,21 @@ Change in \`.narrative-book.json\` if running on a different port.
         fileHashes: { ...currentData.fileHashes || {}, [absDir]: result.updated_cache }
       });
       notice.hide();
-      new import_obsidian14.Notice(`Narrative Forge: Imported ${result.chapters_imported} chapter(s) into local vector database.`);
+      new import_obsidian15.Notice(`Narrative Forge: Imported ${result.chapters_imported} chapter(s) into local vector database.`);
       void this.reloadCharacterCache();
     } catch (err) {
       notice.hide();
-      new import_obsidian14.Notice(`Narrative Forge: Local import failed \u2014 ${err}`);
+      new import_obsidian15.Notice(`Narrative Forge: Local import failed \u2014 ${err}`);
     }
   }
   async testConnection() {
     const details = await this.api.healthDetails();
     if (details) {
-      new import_obsidian14.Notice(
+      new import_obsidian15.Notice(
         `Narrative Forge: Connected. ${details.chapters} chapters, ${details.characters} characters. Provider: ${details.provider}`
       );
     } else {
-      new import_obsidian14.Notice("Narrative Forge: Cannot reach backend. Is it running?");
+      new import_obsidian15.Notice("Narrative Forge: Cannot reach backend. Is it running?");
     }
   }
   async activateSidebar() {
@@ -51737,7 +52157,7 @@ Change in \`.narrative-book.json\` if running on a different port.
   }
   async activateChat() {
     const { workspace } = this.app;
-    const mdView = workspace.getActiveViewOfType(import_obsidian14.MarkdownView);
+    const mdView = workspace.getActiveViewOfType(import_obsidian15.MarkdownView);
     const preSelection = mdView?.editor.getSelection() ?? "";
     let leaf = workspace.getLeavesOfType(NarrativeChatView.VIEW_TYPE)[0];
     if (!leaf) {

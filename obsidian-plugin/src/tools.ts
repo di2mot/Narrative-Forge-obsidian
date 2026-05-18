@@ -1,6 +1,12 @@
 import { App, TFile, normalizePath, FileSystemAdapter, parseYaml } from "obsidian";
 import { parseChapter, parseWikilinkList } from "./parser";
 import { vectorDb } from "./database";
+import { proposeWrite, PendingEditsRegistry } from "./pending_edits";
+
+export interface ReviewContext {
+  reviewAiEdits: boolean;
+  pendingEditsRegistry: PendingEditsRegistry;
+}
 
 export function addLineNumbers(text: string, startLine: number = 1): string {
   const lines = text.split('\n');
@@ -36,6 +42,18 @@ function positionToOffset(content: string, line: number, char: number): number {
   const nextNl = content.indexOf("\n", offset);
   const lineEnd = nextNl === -1 ? content.length : nextNl;
   return Math.min(offset + char, lineEnd);
+}
+
+function sliceLspRange(
+  content: string,
+  startLine: number,
+  startChar: number,
+  endLine: number,
+  endChar: number
+): string {
+  const from = positionToOffset(content, startLine, startChar);
+  const to = positionToOffset(content, endLine, endChar);
+  return content.slice(from, to);
 }
 
 export function applyLspEdit(
@@ -77,7 +95,11 @@ function toVaultRelative(app: App, absPath: string): string {
 export class LocalToolExecutor {
   private vaultBookDir: string;
 
-  constructor(private app: App, bookDir: string) {
+  constructor(
+    private app: App,
+    bookDir: string,
+    private reviewContext?: ReviewContext
+  ) {
     this.vaultBookDir = toVaultRelative(app, bookDir);
   }
 
@@ -565,6 +587,23 @@ export class LocalToolExecutor {
 
     const existing = this.app.vault.getAbstractFileByPath(fullPath);
     if (existing instanceof TFile) {
+      if (this.reviewContext?.reviewAiEdits) {
+        const oldText = await this.app.vault.read(existing);
+        const lines = oldText.split("\n");
+        const status = await proposeWrite(this.app, this.reviewContext.pendingEditsRegistry, {
+          filePath: existing.path,
+          kind: "replace",
+          oldText,
+          newText: args.content,
+          range: {
+            startLine: 1,
+            startChar: 0,
+            endLine: lines.length,
+            endChar: lines[lines.length - 1].length,
+          },
+        });
+        if (status === "rejected") return "User rejected the edit. No change made.";
+      }
       await this.app.vault.modify(existing, args.content);
       return `Updated ${args.filename} (${args.content.split("\n").length} lines).`;
     }
@@ -576,6 +615,22 @@ export class LocalToolExecutor {
       if (!this.app.vault.getAbstractFileByPath(folderPath)) {
         await this.app.vault.createFolder(folderPath);
       }
+    }
+
+    if (this.reviewContext?.reviewAiEdits) {
+      await this.app.vault.create(fullPath, args.content);
+      const newFile = this.app.vault.getAbstractFileByPath(fullPath) as TFile;
+      const status = await proposeWrite(this.app, this.reviewContext.pendingEditsRegistry, {
+        filePath: fullPath,
+        kind: "create-file",
+        oldText: "",
+        newText: args.content,
+      });
+      if (status === "rejected") {
+        await this.app.vault.delete(newFile);
+        return "User rejected the new file. File deleted.";
+      }
+      return `Created ${args.filename} (${args.content.split("\n").length} lines).`;
     }
 
     await this.app.vault.create(fullPath, args.content);
@@ -592,6 +647,26 @@ export class LocalToolExecutor {
   }): Promise<string> {
     const file = this.getFile(args.filename);
     if (!file) return `File not found: ${args.filename}. Available folders: chapters/, notes/`;
+
+    if (this.reviewContext?.reviewAiEdits) {
+      const content = await this.app.vault.read(file);
+      const oldText = sliceLspRange(
+        content, args.start_line, args.start_char, args.end_line, args.end_char
+      );
+      const status = await proposeWrite(this.app, this.reviewContext.pendingEditsRegistry, {
+        filePath: file.path,
+        kind: "replace",
+        oldText,
+        newText: args.new_text,
+        range: {
+          startLine: args.start_line,
+          startChar: args.start_char,
+          endLine: args.end_line,
+          endChar: args.end_char,
+        },
+      });
+      if (status === "rejected") return "User rejected the edit. No change made.";
+    }
 
     let editError: string | null = null;
     let before = 0;
@@ -631,6 +706,16 @@ export class LocalToolExecutor {
   async append_to_chapter(args: { filename: string; text: string }): Promise<string> {
     const file = this.getFile(args.filename);
     if (!file) return `File not found: ${args.filename}. Available folders: chapters/, notes/`;
+
+    if (this.reviewContext?.reviewAiEdits) {
+      const status = await proposeWrite(this.app, this.reviewContext.pendingEditsRegistry, {
+        filePath: file.path,
+        kind: "append",
+        oldText: "",
+        newText: args.text,
+      });
+      if (status === "rejected") return "User rejected the edit. No change made.";
+    }
 
     await this.app.vault.process(file, (data) => {
       const separator = data.trim() ? "\n\n---\n\n" : "";
@@ -678,6 +763,16 @@ export class LocalToolExecutor {
     }
     sceneParts.push(formattedText);
     const sceneBlock = sceneParts.join("\n");
+
+    if (this.reviewContext?.reviewAiEdits) {
+      const status = await proposeWrite(this.app, this.reviewContext.pendingEditsRegistry, {
+        filePath: file.path,
+        kind: "append",
+        oldText: "",
+        newText: sceneBlock,
+      });
+      if (status === "rejected") return "User rejected the edit. No change made.";
+    }
 
     await this.app.vault.process(file, (existing) => {
       const separator = existing.trim() ? "\n\n---\n\n" : "";

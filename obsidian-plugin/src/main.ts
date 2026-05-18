@@ -7,6 +7,8 @@ import { NarrativeAPI } from "./api";
 import type { Character } from "./api";
 import { BackendManager } from "./backend";
 import { buildNosPlugin } from "./decorations";
+import { buildPendingEditsPlugin } from "./pending_decorations";
+import { PendingEditsRegistry } from "./pending_edits";
 import { registerContextMenu } from "./context-menu";
 import { NarrativeSidebarView } from "./sidebar";
 import { NarrativeChatView } from "./chat";
@@ -97,6 +99,7 @@ export default class NarrativePlugin extends Plugin {
   api!: NarrativeAPI;
   backend!: BackendManager;
   bookManager!: BookManager;
+  pendingEditsRegistry!: PendingEditsRegistry;
   cachedCharacters: Character[] = [];
 
   private autoImportDebounceMap = new Map<string, ReturnType<typeof setTimeout>>();
@@ -171,6 +174,9 @@ export default class NarrativePlugin extends Plugin {
 
     // Colors are generated from character names via HSL — no API needed
     this.registerEditorExtension(buildNosPlugin({}));
+
+    this.pendingEditsRegistry = new PendingEditsRegistry();
+    this.registerEditorExtension(buildPendingEditsPlugin(this.app, this.pendingEditsRegistry));
 
     // ---------------------------------------------------------------------------
     // Context menu

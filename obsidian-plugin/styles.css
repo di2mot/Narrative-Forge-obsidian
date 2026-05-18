@@ -924,3 +924,103 @@
   background-color: var(--text-selection) !important;
 }
 
+/* ============================================================
+   Pending AI edits — inline review decorations
+   ============================================================ */
+
+.nf-pending-delete {
+  text-decoration: line-through;
+  color: var(--text-error);
+  background-color: rgba(255, 80, 80, 0.08);
+}
+
+.nf-pending-insert {
+  color: var(--text-success);
+  background-color: rgba(80, 200, 80, 0.10);
+  border-bottom: 1px dashed var(--text-success);
+  white-space: pre-wrap;
+}
+
+.nf-pending-create {
+  background-color: rgba(80, 200, 80, 0.06);
+}
+
+.nf-pending-banner {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 4px 10px;
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.nf-pending-banner-label {
+  color: var(--text-muted);
+  flex: 1;
+}
+
+.nf-pending-actions {
+  display: inline-flex;
+  gap: 4px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.nf-pending-button {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  font-size: 11px;
+  line-height: 18px;
+  cursor: pointer;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  user-select: none;
+}
+
+.nf-pending-button:hover {
+  background: var(--background-modifier-hover);
+}
+
+.nf-pending-apply {
+  color: var(--text-success);
+  border-color: var(--text-success);
+}
+
+.nf-pending-apply:hover {
+  background: rgba(80, 200, 80, 0.12);
+}
+
+.nf-pending-reject {
+  color: var(--text-error);
+  border-color: var(--text-error);
+}
+
+.nf-pending-reject:hover {
+  background: rgba(255, 80, 80, 0.12);
+}
+
+.nf-pending-scrollbar-overlay {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.nf-pending-scrollbar-marker {
+  position: absolute;
+  right: 0;
+  width: 6px;
+  height: 8px;
+  background: var(--text-success);
+  border-radius: 2px;
+}
+
